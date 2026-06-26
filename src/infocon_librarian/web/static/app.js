@@ -105,7 +105,12 @@
     }
 
     function handleSSEEvent(ev) {
-      if (ev.type === 'plan_created') {
+      if (ev.type === 'check_complete') {
+        announce('Check complete — ' + ev.count + ' collections found');
+        loadCheck(ev.check_id);
+      } else if (ev.type === 'check_failed') {
+        announce('Check failed: ' + (ev.error || 'unknown error'));
+      } else if (ev.type === 'plan_created') {
         announce('Plan created');
         loadPlans();
       } else if (ev.type === 'plan_started') {
@@ -194,16 +199,36 @@
     }
 
     // Check upstream
+    let _activeCheckId = null;
     document.getElementById('btn-check-now').addEventListener('click', () => {
-      announce('Check started…');
+      const btn = document.getElementById('btn-check-now');
+      btn.disabled = true;
+      btn.textContent = 'Checking…';
+      announce('Fetching upstream listings…');
       api('POST', '/checks', {}).then(({ ok, data }) => {
         if (ok) {
-          announce('Check queued: ' + (data.check_id || ''));
+          _activeCheckId = data.check_id;
+          announce('Check running — this may take a minute');
         } else {
-          announce('Check failed');
+          announce('Check failed: ' + (data.error || 'unknown'));
+          btn.disabled = false;
+          btn.textContent = 'Check upstream';
         }
       });
     });
+
+    function loadCheck(checkId) {
+      api('GET', '/checks/' + checkId).then(({ ok, data }) => {
+        const btn = document.getElementById('btn-check-now');
+        btn.disabled = false;
+        btn.textContent = 'Check upstream';
+        if (ok && data.results) {
+          renderCollections(data.results);
+          // Switch to Collections tab
+          document.getElementById('btn-collections').click();
+        }
+      });
+    }
 
     // Plan selected
     document.getElementById('btn-plan-selected').addEventListener('click', () => {

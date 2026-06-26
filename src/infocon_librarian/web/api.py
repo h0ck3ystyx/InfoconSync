@@ -70,8 +70,17 @@ def health() -> Response:
 @require_session
 @require_csrf
 def create_check() -> Response:
+    from pathlib import Path  # noqa: PLC0415
+
+    from flask import current_app  # noqa: PLC0415
+
+    from infocon_librarian.services.check_runner import start_check_thread  # noqa: PLC0415
+    from infocon_librarian.storage.repositories import (  # noqa: PLC0415
+        ArchiveRootRepository,
+        CheckRepository,
+    )
+
     body = request.get_json(silent=True) or {}
-    # Only allowed keys: section (string), fresh (bool)
     allowed = {"section", "fresh"}
     unknown = set(body.keys()) - allowed
     if unknown:
@@ -81,8 +90,35 @@ def create_check() -> Response:
     if section is not None and not isinstance(section, str):
         return jsonify({"error": "invalid_field", "field": "section"}), 422
 
+    db = getattr(g, "db", None)
+    root_info = getattr(g, "archive_root_info", None)
+    db_path: Path | None = current_app.config.get("_DB_PATH")
+
+    if db is None or root_info is None or db_path is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    # Upsert archive root, create check record
+    root_repo = ArchiveRootRepository(db)
+    root_record = root_repo.get_by_path(str(root_info.canonical_path))
+    if root_record is None:
+        root_record = root_repo.upsert(
+            str(root_info.canonical_path), root_info.volume_fingerprint
+        )
+
     check_id = str(uuid.uuid4())
-    return jsonify({"check_id": check_id, "status": "queued", "section": section}), 202
+    check_repo = CheckRepository(db)
+    check_repo.create(check_id, archive_root_id=root_record.id, section=section)
+
+    # Start background worker — uses its own DB connection
+    start_check_thread(
+        check_id=check_id,
+        db_path=db_path,
+        archive_root=Path(root_info.canonical_path),
+        section=section,
+        broadcast=_broadcast,
+    )
+
+    return jsonify({"check_id": check_id, "status": "running", "section": section}), 202
 
 
 @api_bp.route("/checks/<check_id>")
@@ -90,8 +126,31 @@ def create_check() -> Response:
 def get_check(check_id: str) -> Response:
     if not _is_valid_uuid(check_id):
         return jsonify({"error": "not_found"}), 404
-    # Stub: in a full implementation this would query the checks table
-    return jsonify({"check_id": check_id, "status": "unknown"}), 404
+
+    db = getattr(g, "db", None)
+    if db is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    import json as _json  # noqa: PLC0415
+
+    from infocon_librarian.storage.repositories import CheckRepository  # noqa: PLC0415
+
+    repo = CheckRepository(db)
+    record = repo.get(check_id)
+    if record is None:
+        return jsonify({"error": "not_found"}), 404
+
+    results = _json.loads(record.result_json) if record.result_json else []
+    return jsonify({
+        "check_id": record.id,
+        "state": record.state,
+        "section": record.section,
+        "started_at": record.started_at,
+        "completed_at": record.completed_at,
+        "error": record.error,
+        "results": results,
+        "count": len(results),
+    })
 
 
 # ---------------------------------------------------------------------------

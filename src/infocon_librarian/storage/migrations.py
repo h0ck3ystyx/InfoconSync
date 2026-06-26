@@ -127,6 +127,24 @@ _MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE plan_items ADD COLUMN size_bytes INTEGER;
         """,
     ),
+    # ------------------------------------------------------------------
+    # Version 3 — upstream check runs and results
+    # ------------------------------------------------------------------
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS checks (
+            id               TEXT PRIMARY KEY,
+            archive_root_id  TEXT REFERENCES archive_roots(id),
+            section          TEXT,
+            state            TEXT NOT NULL,
+            started_at       TEXT NOT NULL,
+            completed_at     TEXT,
+            error            TEXT,
+            result_json      TEXT
+        );
+        """,
+    ),
 ]
 
 _LATEST_VERSION = max(v for v, _ in _MIGRATIONS)
