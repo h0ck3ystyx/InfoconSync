@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Enumerations
@@ -125,3 +126,61 @@ class TorrentStartParams:
     download_limit: int = 0      # bytes/sec, 0 = unlimited
     upload_limit: int = 0        # bytes/sec, 0 = unlimited
     resume_data: bytes | None = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 value objects — local inventory and remote discovery
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SnapshotEntry:
+    """One file captured during a local inventory pass."""
+
+    relative_path: str   # forward-slash, relative to archive root
+    size: int            # bytes
+    mtime_ns: int        # nanoseconds since epoch
+
+
+@dataclass(frozen=True)
+class CollectionKey:
+    """Stable identity for a conference/year grouping."""
+
+    section: str   # top-level directory name (e.g., "defcon")
+    key: str       # normalized collection identifier within the section
+
+    def __str__(self) -> str:
+        return f"{self.section}/{self.key}"
+
+
+@dataclass(frozen=True)
+class RemoteEntry:
+    """One link from a parsed remote directory listing."""
+
+    id: str           # sha256(canonical_url).hexdigest()
+    url: str          # canonical upstream URL
+    parent_url: str   # URL of the listing page this came from
+    kind: str         # "file" or "directory"
+    display_name: str
+    size_hint: int | None
+    modified_hint: str | None
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """One piece of explainable state for a collection."""
+
+    id: str
+    collection_key: CollectionKey
+    kind: EvidenceKind
+    payload: dict[str, Any]
+    observed_at: str   # ISO-8601
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    """Status and supporting evidence for one collection."""
+
+    collection_key: CollectionKey
+    status: ArchiveStatus
+    evidence: tuple[Evidence, ...]
