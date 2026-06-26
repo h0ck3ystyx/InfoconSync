@@ -1,0 +1,74 @@
+{
+  "single_file_v1": {
+    "filename": "single_file_v1.torrent",
+    "description": "v1-only torrent with a single file",
+    "kind": "v1",
+    "v1_infohash": "bb57f50ac0f448725318b17eeb9a1675bc98dfb9",
+    "v2_infohash": null,
+    "files": [
+      {
+        "path": "single_file_v1/talk.mp4",
+        "size": 32768
+      }
+    ],
+    "sha256": "cea8e859c2e4b69cb326112d69316876fd8e10b6269a96e3b1cafa65b473b71a"
+  },
+  "multi_file_v1": {
+    "filename": "multi_file_v1.torrent",
+    "description": "v1-only torrent with multiple files across subdirectories",
+    "kind": "v1",
+    "v1_infohash": "040eabb22e12500d5d2f917c05aef66ada4fd13c",
+    "v2_infohash": null,
+    "files": [
+      {
+        "path": "multi_file_v1/slides.pdf",
+        "size": 20480
+      },
+      {
+        "path": "multi_file_v1/audio/talk.mp3",
+        "size": 49152
+      },
+      {
+        "path": "multi_file_v1/video/talk.mp4",
+        "size": 65536
+      }
+    ],
+    "sha256": "63a6a667daacb3d66125e6f300a47b40c3555219f591179b90ae57ccf994a868"
+  },
+  "multi_file_hybrid": {
+    "filename": "multi_file_hybrid.torrent",
+    "description": "v1/v2 hybrid torrent with multiple files",
+    "kind": "hybrid",
+    "v1_infohash": "1338a91de26325c381f31d2979931e31782058d0",
+    "v2_infohash": "1fa6db43302856267786c486442eaf7cd9a01c473535d68e65e38a23b6f78aec",
+    "files": [
+      {
+        "path": "multi_file_hybrid/slides.pdf",
+        "size": 20480
+      },
+      {
+        "path": "multi_file_hybrid/talk.mp4",
+        "size": 49152
+      }
+    ],
+    "sha256": "c5bc7331cdb6bcb1738fe4e5184903ba691e6641139e77827217504f2fb14958"
+  },
+  "malformed_truncated": {
+    "filename": "malformed_truncated.torrent",
+    "description": "Truncated bencode \u2014 not a valid torrent",
+    "kind": "malformed",
+    "sha256": "b1198cb544e32de46ecfdb6908c1681e017ed857d31faedc2aaa0bcc69850510"
+  },
+  "malformed_empty": {
+    "filename": "malformed_empty.torrent",
+    "description": "Empty file",
+    "kind": "malformed",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "malformed_path_traversal": {
+    "filename": "malformed_path_traversal.torrent",
+    "description": "Torrent with a Windows-reserved filename (NUL) that passes libtorrent sanitization but must be rejected by our validator",
+    "kind": "malformed",
+    "sha256": "adadc641c420a56e1e9c6bc7c419a97d8d1ad85fb3ef70b6392f8ac4af1cd86d"
+  }
+}
