@@ -28,6 +28,10 @@ class LaunchToken:
     def __init__(self) -> None:
         self._token: str | None = secrets.token_urlsafe(32)
 
+    @classmethod
+    def generate(cls) -> LaunchToken:
+        return cls()
+
     @property
     def value(self) -> str | None:
         return self._token
@@ -55,7 +59,11 @@ def get_launch_token() -> LaunchToken:
 @auth_bp.route("/bootstrap/<token>")
 def bootstrap(token: str) -> Response:
     """One-time bootstrap endpoint that exchanges the launch token for a session."""
-    if not _launch_token.consume(token):
+    from flask import current_app  # noqa: PLC0415
+
+    app_token: LaunchToken | None = current_app.config.get("_LAUNCH_TOKEN")
+    tok = app_token if app_token is not None else _launch_token
+    if not tok.consume(token):
         abort(403)
 
     csrf = secrets.token_urlsafe(32)
@@ -88,11 +96,11 @@ def require_csrf(f: Callable) -> Callable:
         if not session.get(_SESSION_KEY):
             abort(403)
 
-        # Origin check — must match the loopback host we're bound to
+        # Origin check — must be present and match the loopback host
         origin = request.headers.get("Origin", "")
         host = request.headers.get("Host", "")
         expected_origin = f"http://{host}"
-        if origin and origin != expected_origin:
+        if not origin or origin != expected_origin:
             abort(403)
 
         # CSRF token check

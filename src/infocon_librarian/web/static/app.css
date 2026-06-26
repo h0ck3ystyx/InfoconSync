@@ -1,0 +1,210 @@
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f5f5f5;
+      color: #1a1a1a;
+    }
+    header {
+      background: #1a1a1a;
+      color: #fff;
+      padding: .75rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    header h1 { font-size: 1.1rem; margin: 0; font-weight: 600; }
+    #nav-status {
+      margin-left: auto;
+      font-size: .85rem;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .dot-ok   { background: #4caf50; }
+    .dot-err  { background: #f44336; }
+    .dot-unk  { background: #9e9e9e; }
+
+    main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+
+    /* ---- Tab nav ---- */
+    .tab-list {
+      display: flex;
+      gap: .25rem;
+      margin-bottom: 1.25rem;
+      border-bottom: 2px solid #ddd;
+      padding: 0;
+      list-style: none;
+    }
+    .tab-list button {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      padding: .5rem 1rem;
+      font: inherit;
+      cursor: pointer;
+      color: #555;
+      font-weight: 500;
+    }
+    .tab-list button[aria-selected="true"] {
+      color: #1a1a1a;
+      border-bottom-color: #1a1a1a;
+    }
+    .tab-list button:focus-visible {
+      outline: 2px solid #1976d2;
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ---- Cards ---- */
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .card h2 { font-size: 1rem; margin: 0 0 .75rem; }
+
+    /* ---- Status badges ---- */
+    .badge {
+      display: inline-block;
+      padding: .15em .55em;
+      border-radius: 3px;
+      font-size: .78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+    .badge-new              { background: #e3f2fd; color: #0d47a1; }
+    .badge-changed          { background: #fff8e1; color: #e65100; }
+    .badge-verified         { background: #e8f5e9; color: #1b5e20; }
+    .badge-unverified       { background: #fce4ec; color: #880e4f; }
+    .badge-local-only       { background: #f3e5f5; color: #4a148c; }
+    .badge-unknown          { background: #f5f5f5; color: #616161; }
+    .badge-pending          { background: #e8eaf6; color: #1a237e; }
+    .badge-blocked          { background: #fff3e0; color: #bf360c; }
+    .badge-complete         { background: #e8f5e9; color: #1b5e20; }
+    .badge-failed           { background: #ffebee; color: #b71c1c; }
+
+    /* ---- Tables ---- */
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    th { text-align: left; padding: .4rem .75rem; border-bottom: 2px solid #ddd; font-weight: 600; }
+    td { padding: .4rem .75rem; border-bottom: 1px solid #eee; }
+    tr:last-child td { border-bottom: none; }
+
+    /* ---- Buttons ---- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      padding: .4rem .9rem;
+      border-radius: 4px;
+      font: inherit;
+      font-size: .85rem;
+      cursor: pointer;
+      border: 1px solid #bbb;
+      background: #fff;
+      color: #1a1a1a;
+    }
+    .btn:hover { background: #f0f0f0; }
+    .btn-primary {
+      background: #1a1a1a;
+      color: #fff;
+      border-color: #1a1a1a;
+    }
+    .btn-primary:hover { background: #333; }
+    .btn:focus-visible {
+      outline: 2px solid #1976d2;
+      outline-offset: 2px;
+    }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    /* ---- Progress ---- */
+    progress {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      overflow: hidden;
+      appearance: none;
+      border: none;
+      background: #e0e0e0;
+    }
+    progress::-webkit-progress-bar   { background: #e0e0e0; }
+    progress::-webkit-progress-value { background: #1a1a1a; }
+    progress::-moz-progress-bar      { background: #1a1a1a; }
+
+    /* ---- Evidence drawer ---- */
+    details summary { cursor: pointer; font-size: .85rem; color: #555; }
+    details[open] summary { color: #1a1a1a; font-weight: 600; }
+    .evidence-payload {
+      background: #f8f8f8;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: .5rem .75rem;
+      font-size: .8rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      margin-top: .5rem;
+    }
+
+    /* ---- Notification region ---- */
+    #live-status {
+      position: fixed;
+      bottom: 1rem;
+      right: 1rem;
+      background: #1a1a1a;
+      color: #fff;
+      padding: .5rem 1rem;
+      border-radius: 4px;
+      font-size: .85rem;
+      display: none;
+      z-index: 999;
+    }
+
+    /* ---- Narrow viewport / zoom ---- */
+    @media (max-width: 600px) {
+      main { padding: .75rem; }
+      .tab-list button { padding: .4rem .6rem; font-size: .85rem; }
+      td, th { padding: .3rem .4rem; }
+    }
+
+    /* ---- Privacy disclosure ---- */
+    #privacy-disclosure {
+      border: 2px solid #e65100;
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+      background: #fff8e1;
+      margin-bottom: 1rem;
+    }
+    #privacy-disclosure h3 { margin: 0 0 .5rem; font-size: .95rem; color: #bf360c; }
+    #privacy-disclosure p { margin: 0 0 .5rem; font-size: .85rem; }
+
+    /* ---- Form elements ---- */
+    label { display: flex; align-items: center; gap: .5rem; cursor: pointer; }
+    input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+    .filter-bar { display: flex; gap: .5rem; margin-bottom: 1rem; align-items: center; flex-wrap: wrap; }
+    input[type="search"] {
+      padding: .35rem .6rem;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      font: inherit;
+      font-size: .85rem;
+      width: 220px;
+    }
+    select {
+      padding: .35rem .5rem;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      font: inherit;
+      font-size: .85rem;
+    }

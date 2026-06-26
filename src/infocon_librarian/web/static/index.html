@@ -4,63 +4,118 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>InfoCon Librarian</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    body {
-      font-family: system-ui, sans-serif;
-      margin: 0;
-      padding: 1.5rem;
-      background: #f8f8f8;
-      color: #1a1a1a;
-    }
-    h1 { font-size: 1.4rem; margin: 0 0 1rem; }
-    .card {
-      background: #fff;
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      padding: 1rem 1.25rem;
-      margin-bottom: 1rem;
-    }
-    .label { font-weight: 600; margin-right: .4em; }
-    .status-ok { color: #2a7a3b; }
-    .status-error { color: #b71c1c; }
-    .status-unknown { color: #666; }
-    pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: .85rem; }
-  </style>
+  <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <h1>InfoCon Librarian</h1>
-  <div class="card" id="health-card">
-    <span class="label">Status:</span>
-    <span id="health-status" class="status-unknown" aria-live="polite">loading…</span>
-    <pre id="health-detail" aria-live="polite"></pre>
+  <header>
+    <h1>InfoCon Librarian</h1>
+    <nav id="nav-status" aria-label="Connection status">
+      <span class="dot dot-unk" id="conn-dot" aria-hidden="true"></span>
+      <span id="conn-label">connecting…</span>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Tab navigation -->
+    <ul class="tab-list" role="tablist" aria-label="Main sections">
+      <li role="presentation">
+        <button role="tab" aria-selected="true" aria-controls="tab-collections" id="btn-collections">
+          Collections
+        </button>
+      </li>
+      <li role="presentation">
+        <button role="tab" aria-selected="false" aria-controls="tab-plans" id="btn-plans">
+          Plans
+        </button>
+      </li>
+      <li role="presentation">
+        <button role="tab" aria-selected="false" aria-controls="tab-transfers" id="btn-transfers">
+          Transfers
+        </button>
+      </li>
+      <li role="presentation">
+        <button role="tab" aria-selected="false" aria-controls="tab-receipts" id="btn-receipts">
+          Receipts
+        </button>
+      </li>
+    </ul>
+
+    <!-- Collections tab -->
+    <section id="tab-collections" class="tab-panel active" role="tabpanel" aria-labelledby="btn-collections">
+      <div class="filter-bar">
+        <label for="search-collections" class="sr-only">Search collections</label>
+        <input type="search" id="search-collections" placeholder="Search…" aria-label="Search collections">
+        <select id="filter-status" aria-label="Filter by status">
+          <option value="">All statuses</option>
+          <option value="new">New</option>
+          <option value="changed">Changed</option>
+          <option value="verified_current">Verified</option>
+          <option value="present_unverified">Present, unverified</option>
+          <option value="local_only">Local only</option>
+          <option value="unknown">Unknown</option>
+        </select>
+        <button class="btn" id="btn-check-now" type="button">Check upstream</button>
+        <button class="btn btn-primary" id="btn-plan-selected" type="button" disabled>
+          Plan selected
+        </button>
+      </div>
+
+      <div class="card" id="collections-container">
+        <p id="collections-empty">No collections loaded. Click <strong>Check upstream</strong> to fetch.</p>
+        <table id="collections-table" hidden aria-label="Collections">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="select-all" aria-label="Select all"></th>
+              <th>Collection</th>
+              <th>Status</th>
+              <th>Size</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody id="collections-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Plans tab -->
+    <section id="tab-plans" class="tab-panel" role="tabpanel" aria-labelledby="btn-plans">
+      <div id="plans-list">
+        <p>No plans yet. Select collections and click <strong>Plan selected</strong>.</p>
+      </div>
+    </section>
+
+    <!-- Transfers tab -->
+    <section id="tab-transfers" class="tab-panel" role="tabpanel" aria-labelledby="btn-transfers">
+      <div id="transfers-list">
+        <p>No active transfers.</p>
+      </div>
+    </section>
+
+    <!-- Receipts tab -->
+    <section id="tab-receipts" class="tab-panel" role="tabpanel" aria-labelledby="btn-receipts">
+      <div id="receipts-list">
+        <p>No receipts yet.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Privacy disclosure (shown before first torrent plan) -->
+  <div id="privacy-disclosure" hidden role="dialog" aria-labelledby="privacy-title" aria-modal="true">
+    <h3 id="privacy-title">Torrent privacy disclosure</h3>
+    <p>This plan includes torrent transfers. Your IP address will be visible to trackers and peers listed below.</p>
+    <div id="privacy-tracker-list"></div>
+    <p><strong>DHT:</strong> <span id="privacy-dht">off</span> &nbsp;
+       <strong>PEX:</strong> <span id="privacy-pex">off</span> &nbsp;
+       <strong>LSD:</strong> <span id="privacy-lsd">off</span></p>
+    <p><strong>Upload cap:</strong> <span id="privacy-upload">unlimited</span> &nbsp;
+       <strong>Seeding after completion:</strong> <span id="privacy-seed">off</span></p>
+    <button class="btn btn-primary" id="btn-privacy-confirm" type="button">I understand — continue</button>
+    <button class="btn" id="btn-privacy-cancel" type="button">Cancel</button>
   </div>
 
-  <script>
-    (function () {
-      const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-      const csrf = csrfMeta ? csrfMeta.content : '';
+  <!-- Live status announcement (ARIA live region) -->
+  <div id="live-status" role="status" aria-live="polite" aria-atomic="true"></div>
 
-      async function fetchHealth() {
-        try {
-          const r = await fetch('/api/health', {
-            headers: csrf ? { 'X-Csrf-Token': csrf } : {}
-          });
-          const data = await r.json();
-          document.getElementById('health-status').textContent = data.status;
-          document.getElementById('health-status').className =
-            data.status === 'ok' ? 'status-ok' : 'status-error';
-          document.getElementById('health-detail').textContent =
-            JSON.stringify(data, null, 2);
-        } catch (e) {
-          document.getElementById('health-status').textContent = 'error';
-          document.getElementById('health-status').className = 'status-error';
-          document.getElementById('health-detail').textContent = String(e);
-        }
-      }
-
-      fetchHealth();
-    })();
-  </script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
