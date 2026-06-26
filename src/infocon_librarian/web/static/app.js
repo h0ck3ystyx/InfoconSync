@@ -2,8 +2,12 @@
     'use strict';
 
     // ---- CSRF token ----
-    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-    const csrf = csrfMeta ? csrfMeta.content : '';
+    // Read from the csrftoken cookie set by /bootstrap (double-submit pattern).
+    function _getCsrf() {
+      const m = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+    const csrf = _getCsrf();
 
     // ---- Utility ----
     function api(method, path, body) {

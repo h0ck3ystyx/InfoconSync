@@ -73,6 +73,16 @@ def bootstrap(token: str) -> Response:
     session.permanent = False
 
     response = redirect(url_for("web.index"))
+    # Set a JS-readable cookie so the frontend can include the CSRF token in
+    # request headers (double-submit cookie pattern). HttpOnly=False is
+    # intentional — JS must be able to read it.
+    response.set_cookie(
+        "csrftoken",
+        csrf,
+        httponly=False,
+        samesite="Strict",
+        secure=False,  # loopback is plain HTTP
+    )
     return response
 
 
