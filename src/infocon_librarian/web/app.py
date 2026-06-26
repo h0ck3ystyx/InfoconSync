@@ -53,8 +53,11 @@ def create_app(
         if path is not None:
             try:
                 from infocon_librarian.storage.database import open_db  # noqa: PLC0415
+                from infocon_librarian.storage.migrations import migrate  # noqa: PLC0415
 
-                g.db = open_db(path)
+                conn = open_db(path)
+                migrate(conn)
+                g.db = conn
                 g.db_ok = True
             except Exception:
                 g.db_ok = False
@@ -79,7 +82,6 @@ def web_bp_routes(app: Flask) -> None:
     """Register minimal page routes on the app."""
     static_dir = Path(__file__).parent / "static"
 
-    @app.route("/")
     def index() -> Response:
         from flask import abort, session  # noqa: PLC0415
 
@@ -87,4 +89,8 @@ def web_bp_routes(app: Flask) -> None:
             abort(403)
         return send_from_directory(str(static_dir), "index.html")
 
+    def static_file(filename: str) -> Response:
+        return send_from_directory(str(static_dir), filename)
+
     app.add_url_rule("/", "web.index", index)
+    app.add_url_rule("/static/<path:filename>", "web.static", static_file)

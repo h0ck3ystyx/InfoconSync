@@ -115,6 +115,18 @@ _MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    # ------------------------------------------------------------------
+    # Version 2 — extend plan_items with URL/size/collection metadata
+    # ------------------------------------------------------------------
+    (
+        2,
+        """
+        ALTER TABLE plan_items ADD COLUMN collection_key TEXT;
+        ALTER TABLE plan_items ADD COLUMN url TEXT;
+        ALTER TABLE plan_items ADD COLUMN torrent_url TEXT;
+        ALTER TABLE plan_items ADD COLUMN size_bytes INTEGER;
+        """,
+    ),
 ]
 
 _LATEST_VERSION = max(v for v, _ in _MIGRATIONS)
