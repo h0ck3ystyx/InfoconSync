@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InfoCon Librarian</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 0;
+      padding: 1.5rem;
+      background: #f8f8f8;
+      color: #1a1a1a;
+    }
+    h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .label { font-weight: 600; margin-right: .4em; }
+    .status-ok { color: #2a7a3b; }
+    .status-error { color: #b71c1c; }
+    .status-unknown { color: #666; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <h1>InfoCon Librarian</h1>
+  <div class="card" id="health-card">
+    <span class="label">Status:</span>
+    <span id="health-status" class="status-unknown" aria-live="polite">loading…</span>
+    <pre id="health-detail" aria-live="polite"></pre>
+  </div>
+
+  <script>
+    (function () {
+      const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+      const csrf = csrfMeta ? csrfMeta.content : '';
+
+      async function fetchHealth() {
+        try {
+          const r = await fetch('/api/health', {
+            headers: csrf ? { 'X-Csrf-Token': csrf } : {}
+          });
+          const data = await r.json();
+          document.getElementById('health-status').textContent = data.status;
+          document.getElementById('health-status').className =
+            data.status === 'ok' ? 'status-ok' : 'status-error';
+          document.getElementById('health-detail').textContent =
+            JSON.stringify(data, null, 2);
+        } catch (e) {
+          document.getElementById('health-status').textContent = 'error';
+          document.getElementById('health-status').className = 'status-error';
+          document.getElementById('health-detail').textContent = String(e);
+        }
+      }
+
+      fetchHealth();
+    })();
+  </script>
+</body>
+</html>

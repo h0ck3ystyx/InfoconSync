@@ -2,121 +2,151 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project
+## Project overview
 
-`infocon-sync` — a Python app that compares a local copy of the [InfoCon](https://infocon.org) archive against the live site and lets the user selectively download new/updated content. The full build spec is in `infocon-sync-requirements.md`. The detailed implementation plan (with live-crawl findings) is in `implementation-plan.md`.
+InfoCon Librarian is a local-first desktop application for managing an existing InfoCon archive. It maintains a local copy of the InfoCon archive using BitTorrent as the primary transfer mechanism, with HTTPS as a controlled fallback only when no usable torrent is available.
 
-## Running
+The product is an archive steward: its job is to detect what changed upstream, build a reviewable transfer plan, execute it safely, and produce auditable receipts. It is not a general-purpose download manager.
+
+The design documents are in `docs/`:
+- `infocon-librarian-product-spec.md` — requirements, status vocabulary, UX flows, security/privacy rules
+- `infocon-librarian-implementation-plan.md` — locked technical decisions, repo layout, architecture diagram, phase-by-phase work and test IDs
+
+## Locked technical decisions
+
+| Area | Decision |
+|---|---|
+| Runtime | Python 3.11+; target CPython 3.11 and 3.12 in CI |
+| UI | Flask local server, plain HTML/CSS/JS — no CDN, bundler, or third-party browser assets |
+| Torrent engine | libtorrent 2.0.x Python bindings via `LibtorrentAdapter` — do not implement BitTorrent protocol |
+| Persistence | SQLite (WAL mode, foreign keys enabled); JSON only for exported receipts/plans |
+| HTTP client | `httpx` — used everywhere, not mixed with `urllib.request` |
+| Test runner | `pytest`, `pytest-cov`, Playwright for browser E2E |
+| Process model | One Python process; `TransferManager` worker thread owns all libtorrent calls |
+| Listening | Flask binds only to `127.0.0.1`/`::1`; torrent networking on a separate interface binding |
+| Release scope | macOS first; Linux/Windows only after their packaging smoke tests pass |
+
+## Repository layout (planned)
+
+```
+src/infocon_librarian/
+├── domain/          # models, status enums, path rules, errors — no Flask/libtorrent deps
+├── storage/         # SQLite migrations and repositories
+├── archive/         # root validation, inventory, snapshot, search
+├── remote/          # HTTP client, fancyindex parser, discovery, cache
+├── torrent/         # LibtorrentAdapter, metainfo inspection, policy, resume
+├── transfer/        # pure planner, TransferManager, HTTP downloader, preflight
+├── services/        # check, verify, plan, receipt services
+└── web/             # Flask app, auth middleware, JSON API, static UI
+tests/
+├── unit/            # domain, paths, parser, planner — no sockets
+├── integration/     # SQLite + Flask + HTTP test server + fake engine — loopback only
+├── engine/          # real libtorrent loopback swarm tests
+├── e2e/             # Playwright browser tests — loopback only
+├── fixtures/        # synthetic listing HTML, torrent files, archive trees
+└── support/         # FakeTorrentEngine, fake remote, local tracker, factories
+```
+
+## Commands (once project is initialized)
 
 ```bash
-pip install -e .
-infocon-sync --root "/Volumes/InfoCon 2024 June"   # first launch — saves --root to config
-infocon-sync                                         # subsequent launches use saved root
-infocon-sync scan                                    # headless diff report, no server
-python -m pytest                                     # run tests
+# Run tests
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+python -m pytest tests/engine -q
+python -m pytest tests/e2e -q
+
+# Lint and type-check
+python -m ruff check src tests
+python -m mypy src
+
+# Install Playwright browsers
+python -m playwright install --with-deps chromium
+
+# CLI entry points
+infocon-librarian --root PATH
+infocon-librarian check [--section NAME] [--fresh] [--format json]
+infocon-librarian plan --new --changed [--format json]
+infocon-librarian verify COLLECTION
+infocon-librarian sync PLAN_ID [--dry-run]
+infocon-librarian receipts list|show|export
 ```
 
-## Architecture
+## Architecture invariants
 
-**Two-process model:** a Flask backend (threaded mode, `127.0.0.1` only) serves a JSON API and static HTML/CSS/JS. On launch it opens the user's default browser. No build step for the frontend — plain HTML/CSS/JS in `infocon_sync/static/`.
+These must never be violated:
 
-**Two-phase diff:**
-- Phase 1 (shallow, fast): list each section directory remotely, compare torrent filenames to detect New / Updated / Unchanged collections. Drives the initial GUI tree.
-- Phase 2 (deep, lazy): triggered per-collection when the user expands it in the GUI. Recursively walks the remote subtree and diffs against local.
+1. Browser input never becomes a remote URL or filesystem path — it can only reference server-issued opaque IDs from the active plan.
+2. The planner decides transfer method before a job starts — a job may not silently switch from torrent to HTTPS.
+3. Only `TransferManager` calls the torrent adapter — Flask handlers never call libtorrent directly.
+4. All archive destinations are validated at planning time AND immediately before writing.
+5. A torrent is `Piece-verified` only after the engine reports a successful final recheck — not when the download alert fires.
+6. HTTPS completion is `Downloaded, unverified` unless a trusted checksum or matching torrent recheck verifies it.
+7. Tests never contact InfoCon, public trackers, DHT, PEX, or the public internet.
 
-**Key modules:**
-- `config.py` — `Config` dataclass + persistent config (`~/.config/infocon-sync/config.json`)
-- `crawler.py` — fancyindex HTML parser (`html.parser` only) + threaded fetcher with retry/backoff
-- `scanner.py` — local filesystem walk + torrent filename parser
-- `diff.py` — phase-1 and phase-2 diff logic
-- `downloader.py` — HTTPS download with `.part` temp files, `Range` resume, progress callbacks
-- `cache.py` — phase-1 JSON cache (`~/.cache/infocon-sync/`) + JSONL download log
-- `server.py` — Flask routes + SSE progress stream
-- `cli.py` — `argparse` entry point
+## Domain status vocabulary
 
-## Settled decisions
+The eight archive states (defined in `domain/status.py`):
 
-### Site structure (from live crawl)
+| State | Key rule |
+|---|---|
+| `New` | No local item exists |
+| `Changed — release marker` | A newer torrent marker exists upstream |
+| `Changed — manifest` | File path/size differs from torrent manifest |
+| `Verified current` | Piece-checked against current torrent, or persisted verified manifest matches |
+| `Present, unverified` | Paths exist but not verified against a manifest |
+| `Unknown` | Not enough upstream evidence to classify cheaply |
+| `Local only` | No current upstream counterpart — never auto-deleted |
+| `Transfer incomplete` | Resumable job exists but not complete |
+| `Downloaded, unverified` | HTTPS transfer complete, no cryptographic verification |
 
-The site root at `https://infocon.org/` lists these sections:
-```
-cons/   documentaries/   mirrors/   podcasts/   rainbow tables/   skills/   word lists/
-```
+`Unchanged` is not a valid user-facing state.
 
-Section name → URL: `urllib.parse.quote(name, safe="") + "/"` — e.g., `"word lists"` → `"word%20lists/"`.
+## Security requirements
 
-**Default sections** (in scope by default): `cons`, `documentaries`, `podcasts`, `skills`, `word lists`.  
-**Opt-in sections**: `mirrors`, `rainbow tables` — available via `--section mirrors` etc., not included by default.
+- Flask binds loopback only; a per-launch cryptographically random capability token bootstraps a session cookie (`HttpOnly`, `SameSite=Strict`).
+- State-changing routes require same-origin `Origin` header, session cookie, and CSRF header.
+- Torrent metadata file paths are untrusted even when fetched over HTTPS — validate against `SafeArchivePath` before passing to the engine.
+- `SafeArchivePath` rejects: absolute paths, `..`, empty components, reserved platform names, symlinks escaping root, case collisions (configurable).
+- Path containment is enforced at the last write operation, not only at planning time.
+- Privacy disclosure is shown before the first torrent plan and in every subsequent plan.
 
-### Fancyindex HTML structure
+## Local service security (web/auth.py)
 
-```html
-<table id="list">
-  <tbody>
-    <tr><td colspan="2" class="link"><a href="../">Parent directory/</a></td>...</tr>
-    <tr><td colspan="2" class="link"><a href="ATT%26CKcon/" title="ATT&amp;CKcon">ATT&amp;CKcon/</a></td>
-        <td class="size">-</td><td class="date">2025 Dec 24 07:00</td></tr>
-    <tr><td colspan="2" class="link"><a href="file.rar" title="file.rar">file.rar</a></td>
-        <td class="size">247.4 MiB</td><td class="date">2019 Oct 01 11:20</td></tr>
-  </tbody>
-</table>
-```
+The token bootstrap flow:
+1. App launches and opens `http://127.0.0.1:<port>/bootstrap/<random-token>`
+2. Bootstrap validates one-time token → sets session cookie → redirects to `/`
+3. All mutation routes check `Origin` + session cookie + CSRF header
+4. Responses include restrictive CSP; no permissive CORS headers
 
-- **Sort order**: directories first, then files (both groups alphabetically).
-- **Entries to skip**: href starts with `?` (sort links), href starts with `#`, href is `../`, absolute URL to different host.
-- **Display name**: use `title` attribute + `html.unescape()`. Do NOT decode the href — the title is cleaner and always present on content links.
-- **Size**: parse `td.class="size"` — e.g., `247.4 MiB` → bytes. Units are KiB/MiB/GiB/TiB (binary). Directories show `-` → `None`.
-- **Server does NOT send `Content-Length`** in HTTP responses. Sizes from the listing are the only source and are approximate (1 decimal place).
+## Transfer policy
 
-### Torrent naming per section
+Method selection order per item:
+1. **Torrent** — if a published `.torrent` is retrievable, parses cleanly, maps safely, and covers the selected content
+2. **HTTPS fallback** — if no usable torrent exists; plan labels item `HTTP fallback — no usable torrent` with a machine-readable reason
+3. **No automatic transfer** — if a torrent exists but swarm is unreachable; UI offers `Retry torrent` and an explicit `Use HTTPS for this item` action
 
-| Section | Torrent format | Version signal |
-|---------|---------------|----------------|
-| `cons/` | `<name> archive v<N> - infocon.org.torrent` | per-collection, v1/v2 |
-| `documentaries/` | `INFOCON Hosted Hacking Documentaries YYYY-MM-DD - v<N>.torrent` | section-wide v1/v2 |
-| `podcasts/` | `<name> archive.torrent` | no version number |
-| `skills/` | none | presence/absence only |
-| `word lists/` | `Word Lists archive v<N> - infocon.org.torrent` | section-wide v1/v2 |
+The app must never silently downgrade a torrent transfer to HTTPS.
 
-Version parsing: extract all `\d+` groups from the version string, take the max. `v1v2` → max version 2.
+## Implementation order
 
-### Per-section diff behavior
+Follow this order from the implementation plan (§14):
 
-- **cons/**: Compare torrent max version per collection. Remote higher → Updated.
-- **documentaries/**: Single section-wide torrent pair; compare versions to detect section updates.
-- **podcasts/**: No version numbers. If both local and remote have `<name> archive.torrent` → Unchanged. If remote has it but local doesn't → Updated. **No deep diff for podcasts** — no attempt to detect new episodes.
-- **skills/**: Presence/absence of collection folders only.
-- **word lists/**: Section-wide torrent comparison. **Flat section** — no subdirectories. Show individual files directly in the UI.
+1. Project tooling, domain enums/models, SQLite migration harness, pure path tests
+2. Phase 0 torrent spike + ADR-001 — stop if libtorrent cannot be packaged
+3. Archive-root validation, inventory, config, Flask security shell + tests
+4. Fancyindex parser, remote cache/client, check service, CLI `check`
+5. Metainfo inspection, verification workflow, real-engine loopback tests
+6. Pure transfer planner and preflight; CLI `plan --dry-run`
+7. Transfer manager, torrent job lifecycle, HTTP downloader, receipts
+8. GUI screens and SSE; Playwright/accessibility tests
+9. Shutdown, removable-drive, packaging hardening, release docs
 
-### Download behavior
+Do not start frontend polish, search, scheduled checks, or community seeding before steps 1–7 have acceptance tests passing.
 
-- Write to `<path>.part` temp file; rename to final path on clean transfer completion.
-- Resume: if `.part` exists, send `Range: bytes=<size>-`.
-- **No size verification** — server sends no `Content-Length`. Trust clean transfer. If something went wrong, the `.part` file stays and resumes on next run.
-- Skip if `local_path` already exists and `local_path.stat().st_size == expected_size` (size from fancyindex listing, approximate).
-- Concurrency: 3 parallel downloads by default.
+## Testing rules
 
-### Config persistence
-
-`~/.config/infocon-sync/config.json` stores `root` (archive drive path). First launch requires `--root`; subsequent launches use the saved value. `--root` on any launch overrides and updates the saved value.
-
-## Technical constraints
-
-- Python 3.10+. Prefer stdlib (`urllib`, `html.parser`, `concurrent.futures`, `pathlib`). Flask for the server only.
-- Server binds to `127.0.0.1` only — never `0.0.0.0`.
-- Port: try 7734, fall back to OS-assigned. Print URL to stdout before opening browser.
-- `pathlib` everywhere for paths. Filenames contain spaces, `&`, `@`, `(`, `)`, `#`.
-- Crawler: max 6 concurrent workers, exponential backoff (1s/2s/4s), max 3 retries, User-Agent `infocon-sync/1.0`.
-- Retry on `urllib.error.URLError`, HTTP 5xx, socket timeout. Do NOT retry 4xx.
-
-## Testing
-
-```bash
-python -m pytest              # all tests
-python -m pytest tests/test_crawler.py  # single module
-```
-
-Required unit tests:
-- **Parser** against `tests/fixtures/sample_fancyindex.html`: sort links filtered, parent filtered, dirs classified, files classified, title-attr name extraction, size parsing (KiB/MiB/GiB), off-host URLs filtered.
-- **Torrent parser**: `v1`, `v2`, `v1v2` (→ max 2), names with `&`, no-version podcast format, non-matching filenames.
-- **Diff engine** with fixture dicts (no filesystem): New, Updated, Unchanged, Local-only, podcast Unchanged (both have torrent), podcast Updated (missing local torrent), deep missing/changed/present.
+- `domain/`, `planner.py`, path validation, and receipt generation must be pure unit tests — no Flask, no libtorrent.
+- Use `FakeTorrentEngine` (from `tests/support/fake_engine.py`) in all unit and integration tests; reserve the real adapter for `tests/engine/`.
+- Fixtures must be synthetic or freely redistributable — do not commit InfoCon media payloads.
+- Coverage target: ≥90% for domain/planner/path code; do not use aggregate coverage to hide untested native-engine paths.
