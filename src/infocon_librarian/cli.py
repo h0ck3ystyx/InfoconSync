@@ -231,6 +231,66 @@ def _cmd_receipts(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Launch (no subcommand — start the browser UI)
+# ---------------------------------------------------------------------------
+
+
+def _cmd_launch(args: argparse.Namespace) -> None:
+    import socket
+    import threading
+    import webbrowser
+
+    from infocon_librarian.archive.root import validate_root
+    from infocon_librarian.config import default_config
+    from infocon_librarian.domain.errors import ArchiveRootError
+    from infocon_librarian.shutdown import ShutdownController, install_signal_handlers
+    from infocon_librarian.structured_logging import configure_logging
+    from infocon_librarian.web.app import create_app
+    from infocon_librarian.web.auth import LaunchToken
+
+    root = Path(args.root)
+    try:
+        root_info = validate_root(root)
+    except ArchiveRootError as exc:
+        _error(str(exc))
+        return
+
+    cfg = default_config()
+    cfg.ensure_dirs()
+    configure_logging(log_dir=cfg.log_dir)
+
+    # Claim a free loopback port before the server starts
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
+        _s.bind(("127.0.0.1", 0))
+        port = _s.getsockname()[1]
+
+    app = create_app(db_path=cfg.db_path, archive_root_info=root_info)
+
+    tok = LaunchToken.generate()
+    app.config["_LAUNCH_TOKEN"] = tok
+
+    base_url = f"http://127.0.0.1:{port}"
+    bootstrap_url = f"{base_url}/bootstrap/{tok.value}"
+
+    shutdown = ShutdownController(on_complete=lambda: None)
+    install_signal_handlers(shutdown)
+
+    def _open_browser() -> None:
+        import time
+        time.sleep(0.4)
+        webbrowser.open(bootstrap_url)
+
+    threading.Thread(target=_open_browser, daemon=True).start()
+
+    print(f"InfoCon Librarian  {base_url}")
+    print(f"Archive root       {root_info.canonical_path}")
+    print(f"Free space         {root_info.free_bytes // (1024 ** 3):.1f} GB")
+    print("Press Ctrl-C to quit.")
+
+    app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -241,6 +301,9 @@ def main(argv: list[str] | None = None) -> None:
     fmt = getattr(args, "format", "human")
 
     if args.command is None:
+        if args.root is not None:
+            _cmd_launch(args)
+            return
         parser.print_help()
         sys.exit(0)
 
