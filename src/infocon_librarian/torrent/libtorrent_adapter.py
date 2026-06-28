@@ -240,6 +240,7 @@ class LibtorrentAdapter:
     def recheck(self, job_id: EngineJobId) -> None:
         handle = self._get_handle(job_id)
         handle.force_recheck()
+        handle.resume()  # force_recheck resets to paused; must resume for check to run
 
     def poll(self, job_id: EngineJobId) -> TransferProgress:
         handle = self._get_handle(job_id)

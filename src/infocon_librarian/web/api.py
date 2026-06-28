@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 import uuid
 from typing import Any
+
+# Allowed format for collection_ids submitted by the browser (section/key).
+# Prevents path traversal — no dots-dots, no slashes beyond the one separator.
+_COLLECTION_ID_RE = re.compile(r'^[A-Za-z0-9_.() -]+/[A-Za-z0-9_.() -]+$')
 
 from flask import Blueprint, Response, g, jsonify, request, stream_with_context
 
@@ -158,6 +163,29 @@ def get_check(check_id: str) -> Response:
 # ---------------------------------------------------------------------------
 
 
+@api_bp.route("/plans")
+@require_session
+def list_plans() -> Response:
+    db = getattr(g, "db", None)
+    if db is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
+
+    repo = PlanRepository(db)
+    plans = repo.list_plans()
+    result = []
+    for p in plans:
+        items = repo.list_items(p.id)
+        result.append({
+            "plan_id": p.id,
+            "state": p.state,
+            "created_at": p.created_at,
+            "item_count": len(items),
+        })
+    return jsonify(result)
+
+
 @api_bp.route("/plans", methods=["POST"])
 @require_session
 @require_csrf
@@ -173,14 +201,30 @@ def create_plan() -> Response:
         if key in body:
             return jsonify({"error": "forbidden_field", "field": key}), 403
 
+    collection_ids = body.get("collection_ids") or []
+    if not isinstance(collection_ids, list):
+        return jsonify({"error": "invalid_field", "field": "collection_ids"}), 422
+
+    # Validate each id: must match "section/key" pattern and contain no dotdot components
+    def _safe_cid(cid: object) -> bool:
+        s = str(cid)
+        if not _COLLECTION_ID_RE.match(s):
+            return False
+        # Reject any segment that is ".." or starts with "." (hidden/traversal)
+        return all(part and part != ".." and not part.startswith(".") for part in s.split("/"))
+
+    invalid = [cid for cid in collection_ids if not _safe_cid(cid)]
+    if invalid:
+        return jsonify({"error": "invalid_collection_ids", "ids": invalid}), 422
+
     db = getattr(g, "db", None)
     root_info = getattr(g, "archive_root_info", None)
 
     if db is None or root_info is None:
         return jsonify({"error": "not_configured"}), 503
 
-    from infocon_librarian.storage.plan_repository import PlanRepository
-    from infocon_librarian.storage.repositories import ArchiveRootRepository
+    from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
+    from infocon_librarian.storage.repositories import ArchiveRootRepository  # noqa: PLC0415
 
     root_repo = ArchiveRootRepository(db)
     root_record = root_repo.get_by_path(str(root_info.canonical_path))
@@ -192,10 +236,37 @@ def create_plan() -> Response:
     plan_repo = PlanRepository(db)
     record = plan_repo.create_plan(root_record.id)
 
+    infocon_base = "https://infocon.org/"
+    for cid in collection_ids:
+        # cid already validated: "section/key" — no path traversal possible
+        plan_repo.add_item(
+            record.id,
+            method="https",
+            status="pending",
+            collection_key=cid,
+            destination_relpath=cid,
+            url=infocon_base + cid + "/",
+            fallback_reason="no_torrent_fetched",
+        )
+
+    items = plan_repo.list_items(record.id)
     _broadcast({"type": "plan_created", "plan_id": record.id})
-    return jsonify(
-        {"plan_id": record.id, "state": record.state, "created_at": record.created_at}
-    ), 201
+    return jsonify({
+        "plan_id": record.id,
+        "state": record.state,
+        "created_at": record.created_at,
+        "items": [
+            {
+                "item_id": i.id,
+                "method": i.method,
+                "status": i.status,
+                "destination_relpath": i.destination_relpath,
+                "fallback_reason": i.fallback_reason,
+                "size_bytes": i.size_bytes,
+            }
+            for i in items
+        ],
+    }), 201
 
 
 @api_bp.route("/plans/<plan_id>")
@@ -338,6 +409,95 @@ def approve_http_fallback(item_id: str) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# Verify
+# ---------------------------------------------------------------------------
+
+
+@api_bp.route("/verify", methods=["POST"])
+@require_session
+@require_csrf
+def create_verify() -> Response:
+    from pathlib import Path  # noqa: PLC0415
+
+    from flask import current_app  # noqa: PLC0415
+
+    from infocon_librarian.services.verify_runner import start_verify_thread  # noqa: PLC0415
+    from infocon_librarian.storage.repositories import (  # noqa: PLC0415
+        ArchiveRootRepository,
+        CheckRepository,
+    )
+
+    body = request.get_json(silent=True) or {}
+    collection_id = body.get("collection_id")
+    if not collection_id or not isinstance(collection_id, str):
+        return jsonify({"error": "missing_field", "field": "collection_id"}), 422
+
+    def _safe_cid(cid: str) -> bool:
+        if not _COLLECTION_ID_RE.match(cid):
+            return False
+        return all(part and part != ".." and not part.startswith(".") for part in cid.split("/"))
+
+    if not _safe_cid(collection_id):
+        return jsonify({"error": "invalid_collection_id"}), 422
+
+    adapter = current_app.config.get("_ADAPTER")
+    if adapter is None:
+        return jsonify({"error": "torrent_engine_unavailable",
+                        "detail": "Start the app with libtorrent installed to enable verification"}), 503
+
+    db = getattr(g, "db", None)
+    root_info = getattr(g, "archive_root_info", None)
+    db_path: Path | None = current_app.config.get("_DB_PATH")
+
+    if db is None or root_info is None or db_path is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    # Find archive root record
+    root_repo = ArchiveRootRepository(db)
+    root_record = root_repo.get_by_path(str(root_info.canonical_path))
+    if root_record is None:
+        root_record = root_repo.upsert(
+            str(root_info.canonical_path), root_info.volume_fingerprint
+        )
+
+    # Find torrent URL from most recent check result for this collection
+    torrent_url: str | None = body.get("torrent_url")  # allow explicit override
+    if not torrent_url:
+        check_repo = CheckRepository(db)
+        latest = check_repo.get_latest_completed(root_record.id)
+        if latest and latest.result_json:
+            results = json.loads(latest.result_json)
+            for item in results:
+                if f"{item.get('section', '')}/{item.get('key', '')}" == collection_id:
+                    for ev in item.get("evidence", []):
+                        if ev.get("kind") == "remote_listing":
+                            torrent_url = ev.get("payload", {}).get("torrent_url")
+                    break
+
+    if not torrent_url:
+        # Fallback: construct conventional InfoCon torrent URL
+        key = collection_id.split("/", 1)[1]
+        torrent_url = f"https://infocon.org/{collection_id}/{key}.torrent"
+
+    verify_id, _ = start_verify_thread(
+        collection_key=collection_id,
+        archive_root_id=root_record.id,
+        db_path=db_path,
+        archive_root=Path(root_info.canonical_path),
+        torrent_url=torrent_url,
+        broadcast=_broadcast,
+        adapter=adapter,
+    )
+
+    return jsonify({
+        "verify_id": verify_id,
+        "collection_id": collection_id,
+        "torrent_url": torrent_url,
+        "state": "running",
+    }), 202
+
+
+# ---------------------------------------------------------------------------
 # SSE event stream
 # ---------------------------------------------------------------------------
 
@@ -378,6 +538,23 @@ def events() -> Response:
 # ---------------------------------------------------------------------------
 # Receipts
 # ---------------------------------------------------------------------------
+
+
+@api_bp.route("/receipts")
+@require_session
+def list_receipts() -> Response:
+    db = getattr(g, "db", None)
+    if db is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
+
+    repo = PlanRepository(db)
+    receipts = repo.list_receipts()
+    return jsonify([
+        {"receipt_id": r.id, "plan_id": r.plan_id, "completed_at": r.completed_at}
+        for r in receipts
+    ])
 
 
 @api_bp.route("/receipts/<receipt_id>")

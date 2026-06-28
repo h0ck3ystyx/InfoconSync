@@ -152,3 +152,95 @@ class CheckRepository:
         if row is None:
             return None
         return CheckRecord(**dict(row))
+
+    def get_latest_completed(self, archive_root_id: str) -> CheckRecord | None:
+        """Return the most recently completed check for this archive root."""
+        row = self._conn.execute(
+            "SELECT id, archive_root_id, section, state, started_at, "
+            "completed_at, error, result_json FROM checks "
+            "WHERE archive_root_id=? AND state='complete' "
+            "ORDER BY completed_at DESC LIMIT 1",
+            (archive_root_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return CheckRecord(**dict(row))
+
+
+# ---------------------------------------------------------------------------
+# Verifications
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VerificationRecord:
+    id: str
+    collection_key: str
+    archive_root_id: str | None
+    level: str           # piece_verified | unverified
+    torrent_url: str | None
+    verified_at: str
+    error: str | None
+
+
+class VerificationRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def create(
+        self,
+        verify_id: str,
+        *,
+        collection_key: str,
+        archive_root_id: str | None,
+        level: str,
+        torrent_url: str | None = None,
+        error: str | None = None,
+    ) -> VerificationRecord:
+        now = _now()
+        self._conn.execute(
+            "INSERT INTO verifications "
+            "(id, collection_key, archive_root_id, level, torrent_url, verified_at, error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (verify_id, collection_key, archive_root_id, level, torrent_url, now, error),
+        )
+        self._conn.commit()
+        return VerificationRecord(
+            id=verify_id,
+            collection_key=collection_key,
+            archive_root_id=archive_root_id,
+            level=level,
+            torrent_url=torrent_url,
+            verified_at=now,
+            error=error,
+        )
+
+    def get_latest(self, collection_key: str, archive_root_id: str) -> VerificationRecord | None:
+        """Return the most recent verification for this collection."""
+        row = self._conn.execute(
+            "SELECT id, collection_key, archive_root_id, level, torrent_url, verified_at, error "
+            "FROM verifications WHERE collection_key=? AND archive_root_id=? "
+            "ORDER BY verified_at DESC LIMIT 1",
+            (collection_key, archive_root_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return VerificationRecord(**dict(row))
+
+    def get_verified_keys(self, archive_root_id: str) -> set[str]:
+        """Return collection keys whose most recent verification passed (any level)."""
+        rows = self._conn.execute(
+            "SELECT collection_key, level FROM verifications "
+            "WHERE archive_root_id=? ORDER BY verified_at DESC",
+            (archive_root_id,),
+        ).fetchall()
+        # For each key, take only the most recent result
+        seen: set[str] = set()
+        verified: set[str] = set()
+        _VERIFIED_LEVELS = {"piece_verified", "manifest_verified"}
+        for key, level in rows:
+            if key not in seen:
+                seen.add(key)
+                if level in _VERIFIED_LEVELS:
+                    verified.add(key)
+        return verified

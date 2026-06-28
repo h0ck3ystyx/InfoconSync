@@ -17,6 +17,7 @@ def create_app(
     db_path: Path | None = None,
     secret_key: str | None = None,
     archive_root_info: Any = None,
+    adapter: Any = None,
 ) -> Flask:
     """Create and configure the Flask application.
 
@@ -38,6 +39,7 @@ def create_app(
     # Store config for use in request context
     app.config["_DB_PATH"] = db_path
     app.config["_ARCHIVE_ROOT_INFO"] = archive_root_info
+    app.config["_ADAPTER"] = adapter  # TorrentAdapter or None
 
     # Register blueprints
     app.register_blueprint(auth_bp)

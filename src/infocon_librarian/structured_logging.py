@@ -34,9 +34,11 @@ class RedactingFilter(logging.Filter):
         record.msg = _scrub(str(record.msg))
         if record.args:
             if isinstance(record.args, dict):
-                record.args = {k: _scrub(str(v)) for k, v in record.args.items()}
+                record.args = {k: _scrub(str(v)) if isinstance(v, str) else v
+                               for k, v in record.args.items()}
             elif isinstance(record.args, tuple):
-                record.args = tuple(_scrub(str(a)) for a in record.args)
+                record.args = tuple(_scrub(a) if isinstance(a, str) else a
+                                    for a in record.args)
         return True
 
 
@@ -100,6 +102,9 @@ def configure_logging(
     # Silence overly chatty third-party loggers
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logging.getLogger("libtorrent").setLevel(logging.WARNING)
+    # httpx uses %d for status codes; Python 3.14 strict type checking breaks it
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def make_support_bundle_summary() -> dict[str, Any]:

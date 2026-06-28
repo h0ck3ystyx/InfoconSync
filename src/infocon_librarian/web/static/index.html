@@ -48,7 +48,8 @@
         <select id="filter-status" aria-label="Filter by status">
           <option value="">All statuses</option>
           <option value="new">New</option>
-          <option value="changed">Changed</option>
+          <option value="changed_marker">Changed (marker)</option>
+          <option value="changed_manifest">Changed (manifest)</option>
           <option value="verified_current">Verified</option>
           <option value="present_unverified">Present, unverified</option>
           <option value="local_only">Local only</option>
@@ -60,20 +61,8 @@
         </button>
       </div>
 
-      <div class="card" id="collections-container">
+      <div id="collections-container">
         <p id="collections-empty">No collections loaded. Click <strong>Check upstream</strong> to fetch.</p>
-        <table id="collections-table" hidden aria-label="Collections">
-          <thead>
-            <tr>
-              <th><input type="checkbox" id="select-all" aria-label="Select all"></th>
-              <th>Collection</th>
-              <th>Status</th>
-              <th>Size</th>
-              <th>Evidence</th>
-            </tr>
-          </thead>
-          <tbody id="collections-body"></tbody>
-        </table>
       </div>
     </section>
 

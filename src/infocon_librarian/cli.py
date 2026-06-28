@@ -264,7 +264,15 @@ def _cmd_launch(args: argparse.Namespace) -> None:
         _s.bind(("127.0.0.1", 0))
         port = _s.getsockname()[1]
 
-    app = create_app(db_path=cfg.db_path, archive_root_info=root_info)
+    try:
+        from infocon_librarian.torrent.libtorrent_adapter import LibtorrentAdapter  # noqa: PLC0415
+        adapter = LibtorrentAdapter()
+        print("Torrent engine       ready")
+    except Exception as exc:  # ImportError or libtorrent init failure
+        adapter = None
+        print(f"Torrent engine       unavailable ({exc})")
+
+    app = create_app(db_path=cfg.db_path, archive_root_info=root_info, adapter=adapter)
 
     tok = LaunchToken.generate()
     app.config["_LAUNCH_TOKEN"] = tok
@@ -272,7 +280,8 @@ def _cmd_launch(args: argparse.Namespace) -> None:
     base_url = f"http://127.0.0.1:{port}"
     bootstrap_url = f"{base_url}/bootstrap/{tok.value}"
 
-    shutdown = ShutdownController(on_complete=lambda: None)
+    import os as _os
+    shutdown = ShutdownController(on_complete=lambda: _os._exit(0))
     install_signal_handlers(shutdown)
 
     def _open_browser() -> None:

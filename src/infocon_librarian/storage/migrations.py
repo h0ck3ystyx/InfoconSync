@@ -145,6 +145,25 @@ _MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    # ------------------------------------------------------------------
+    # Version 4 — piece-verification results
+    # ------------------------------------------------------------------
+    (
+        4,
+        """
+        CREATE TABLE IF NOT EXISTS verifications (
+            id               TEXT PRIMARY KEY,
+            collection_key   TEXT NOT NULL,
+            archive_root_id  TEXT REFERENCES archive_roots(id),
+            level            TEXT NOT NULL,
+            torrent_url      TEXT,
+            verified_at      TEXT NOT NULL,
+            error            TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_verifications_key
+            ON verifications (collection_key, verified_at DESC);
+        """,
+    ),
 ]
 
 _LATEST_VERSION = max(v for v, _ in _MIGRATIONS)

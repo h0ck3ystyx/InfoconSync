@@ -143,9 +143,57 @@
     progress::-webkit-progress-value { background: #1a1a1a; }
     progress::-moz-progress-bar      { background: #1a1a1a; }
 
-    /* ---- Evidence drawer ---- */
-    details summary { cursor: pointer; font-size: .85rem; color: #555; }
-    details[open] summary { color: #1a1a1a; font-weight: 600; }
+    /* ---- Evidence drawer (inside table cells) ---- */
+    td > details > summary { cursor: pointer; font-size: .85rem; color: #555; }
+    td > details[open] > summary { color: #1a1a1a; font-weight: 600; }
+
+    /* ---- Section groups (collapsible per-section blocks) ---- */
+    details.section-group {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      margin-bottom: .75rem;
+      background: #fff;
+      overflow: hidden;
+    }
+    details.section-group > summary {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      padding: .6rem 1rem;
+      cursor: pointer;
+      background: #f5f5f5;
+      border-bottom: 1px solid #e0e0e0;
+      list-style: none;
+      user-select: none;
+    }
+    details.section-group > summary::-webkit-details-marker { display: none; }
+    details.section-group > summary::before {
+      content: '▶';
+      font-size: .6rem;
+      color: #777;
+      flex-shrink: 0;
+      transition: transform .12s;
+    }
+    details.section-group[open] > summary::before { transform: rotate(90deg); }
+    details.section-group > summary:focus-visible { outline: 2px solid #1976d2; outline-offset: -2px; }
+    details.section-group:not([open]) > summary { border-bottom: none; }
+
+    .section-name {
+      font-weight: 600;
+      font-size: .9rem;
+      text-transform: capitalize;
+    }
+    .section-count {
+      color: #777;
+      font-size: .82rem;
+    }
+    .section-badges {
+      display: flex;
+      gap: .3rem;
+      flex-wrap: wrap;
+      margin-left: auto;
+    }
+    .section-table { margin: 0; border-radius: 0; }
     .evidence-payload {
       background: #f8f8f8;
       border: 1px solid #e0e0e0;
@@ -170,6 +218,110 @@
       display: none;
       z-index: 999;
     }
+
+    /* ---- Plan summary list ---- */
+    .plan-summary-card { margin-bottom: .5rem; }
+    .plan-summary-row {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      flex-wrap: wrap;
+    }
+    .plan-id { font-size: .82rem; color: #555; }
+    .plan-meta { font-size: .82rem; color: #777; }
+    .btn-sm { padding: .25rem .6rem; font-size: .8rem; }
+
+    /* ---- Plan detail view ---- */
+    .plan-detail { margin-top: .75rem; }
+    .plan-detail-header { display: flex; align-items: baseline; gap: 1rem; margin-bottom: .75rem; flex-wrap: wrap; }
+    .plan-detail-header h2 { margin: 0; font-size: 1rem; }
+    .plan-detail-meta { font-size: .82rem; color: #777; }
+    .plan-items-table td { vertical-align: middle; }
+    .item-actions { white-space: nowrap; }
+    .plan-actions { display: flex; gap: .5rem; margin-top: 1rem; }
+
+    .method-badge {
+      display: inline-block;
+      padding: .1em .45em;
+      border-radius: 3px;
+      font-size: .75rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+    .method-torrent { background: #e3f2fd; color: #1565c0; }
+    .method-https   { background: #f3e5f5; color: #6a1b9a; }
+
+    .privacy-notice {
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      border-radius: 4px;
+      padding: .6rem .9rem;
+      font-size: .85rem;
+      margin-bottom: .75rem;
+      color: #5d4037;
+    }
+
+    /* ---- Receipts ---- */
+    .receipt-card { margin-bottom: .5rem; }
+    .receipt-row {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      flex-wrap: wrap;
+    }
+    .receipt-json-container { margin-top: .75rem; }
+    .receipt-json {
+      background: #f5f5f5;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: .75rem;
+      font-size: .8rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    /* ---- Verify button ---- */
+    .btn-verify { color: #1565c0; border-color: #90caf9; background: #e3f2fd; }
+    .btn-verify:hover { background: #bbdefb; }
+    .btn-verify:disabled { opacity: .5; cursor: not-allowed; }
+    .action-cell { white-space: nowrap; width: 6rem; }
+
+    /* ---- Verify result row ---- */
+    .verify-result-row td { padding: 0; border-bottom: 1px solid #eee; }
+    .verify-result {
+      padding: .5rem .75rem .5rem 2.5rem;
+      font-size: .83rem;
+      border-left: 3px solid transparent;
+    }
+    .verify-result-pass {
+      background: #f1f8e9;
+      border-left-color: #66bb6a;
+      color: #2e7d32;
+    }
+    .verify-result-fail {
+      background: #fff8e1;
+      border-left-color: #ffa726;
+      color: #4e342e;
+    }
+    .verify-detail { margin-top: .4rem; }
+    .verify-detail > summary { cursor: pointer; color: #795548; font-size: .82rem; }
+    .verify-detail-label { margin: .4rem 0 .15rem; font-weight: 600; font-size: .8rem; }
+    .verify-file-list {
+      margin: 0 0 .4rem 1.25rem;
+      padding: 0;
+      font-size: .8rem;
+      font-family: ui-monospace, monospace;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .verify-file-list li { margin: .1rem 0; }
+    .verify-more { color: #999; font-style: italic; font-family: inherit; }
+    .verify-size-info { color: #888; }
+
+    /* ---- Transfers note ---- */
+    .transfer-note { font-size: .82rem; color: #777; font-style: italic; margin: .25rem 0 .75rem; }
 
     /* ---- Narrow viewport / zoom ---- */
     @media (max-width: 600px) {

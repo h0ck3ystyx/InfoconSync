@@ -19,7 +19,7 @@ from infocon_librarian.remote.fancyindex import parse_listing
 from infocon_librarian.services.check_service import check_collections
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
-from infocon_librarian.storage.repositories import CheckRepository
+from infocon_librarian.storage.repositories import ArchiveRootRepository, CheckRepository, VerificationRepository
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +138,19 @@ def run_check(
                         "error": str(exc),
                         "evidence": [],
                     })
+
+        # Upgrade present_unverified → verified_current for collections with
+        # a persisted piece_verified result from a prior verification run.
+        verify_repo = VerificationRepository(conn)
+        root_repo = ArchiveRootRepository(conn)
+        root_record = root_repo.get_by_path(str(archive_root.resolve()))
+        if root_record is not None:
+            verified_keys = verify_repo.get_verified_keys(root_record.id)
+            if verified_keys:
+                for item in all_results:
+                    ckey = f"{item['section']}/{item['key']}"
+                    if item["status"] == "present_unverified" and ckey in verified_keys:
+                        item["status"] = "verified_current"
 
         result_json = json.dumps(all_results)
         check_repo.complete(check_id, result_json)
