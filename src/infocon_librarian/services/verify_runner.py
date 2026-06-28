@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from infocon_librarian.torrent.adapter import TorrentAdapter
 
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
 from infocon_librarian.remote.client import RemoteClient, RemoteFetchError
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
@@ -32,47 +34,69 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 _DETAIL_CAP = 50  # max file paths sent to UI
 
 
-def _manifest_check(
+def manifest_check(
     torrent_bytes: bytes,
     *,
     section: str,
     archive_root: Path,
     adapter: "TorrentAdapter",
 ) -> tuple[str, str | None, dict]:
-    """Stat each file in the torrent manifest. Returns (level, error_summary, details)."""
+    """Stat each file in the torrent manifest. Returns (level, error_summary, details).
+
+    Distinguishes three size-mismatch cases:
+    - local > expected: file is larger than the torrent declares — characteristic of
+      pre-re-encoding originals (v1 content when torrent is v2).  Not corruption.
+    - local < expected: file is smaller than declared — truncated or wrong file.
+    - missing: file absent entirely.
+
+    Returns 'has_older_version' when files are all present and only the
+    larger-than-expected mismatch is found.  Returns 'unverified' for any missing
+    or truncated files.
+    """
     manifest = adapter.inspect(torrent_bytes)
     save_root = archive_root / section
 
     missing: list[str] = []
-    wrong_size: list[dict] = []
+    size_larger: list[dict] = []   # local > expected — likely pre-encoding original
+    size_smaller: list[dict] = []  # local < expected — truncated or wrong file
 
     for tf in manifest.files:
         local = save_root / tf.relative_path
         if not local.exists():
             missing.append(tf.relative_path)
-        elif local.stat().st_size != tf.size:
-            wrong_size.append({
-                "path": tf.relative_path,
-                "expected": tf.size,
-                "actual": local.stat().st_size,
-            })
+        else:
+            actual = local.stat().st_size
+            if actual > tf.size:
+                size_larger.append({"path": tf.relative_path, "expected": tf.size, "actual": actual})
+            elif actual < tf.size:
+                size_smaller.append({"path": tf.relative_path, "expected": tf.size, "actual": actual})
 
     details: dict = {
         "total_files": len(manifest.files),
         "missing": missing[:_DETAIL_CAP],
         "missing_total": len(missing),
-        "wrong_size": wrong_size[:_DETAIL_CAP],
-        "wrong_size_total": len(wrong_size),
+        "size_larger": size_larger[:_DETAIL_CAP],
+        "size_larger_total": len(size_larger),
+        "size_smaller": size_smaller[:_DETAIL_CAP],
+        "size_smaller_total": len(size_smaller),
     }
 
-    if not missing and not wrong_size:
+    if not missing and not size_larger and not size_smaller:
         return "manifest_verified", None, details
 
+    # All files present, only larger-than-expected mismatches → older version
+    if not missing and not size_smaller and size_larger:
+        summary = f"{len(size_larger)} file(s) are larger than the current torrent expects"
+        return "has_older_version", summary, details
+
+    # Missing files or truncated files → genuine problem
     parts = []
     if missing:
-        parts.append(f"{len(missing)} missing file(s)")
-    if wrong_size:
-        parts.append(f"{len(wrong_size)} size mismatch(es)")
+        parts.append(f"{len(missing)} missing")
+    if size_smaller:
+        parts.append(f"{len(size_smaller)} truncated/wrong-size")
+    if size_larger:
+        parts.append(f"{len(size_larger)} larger than expected")
     return "unverified", "; ".join(parts), details
 
 
@@ -93,20 +117,36 @@ def run_verify(
     verify_repo = VerificationRepository(conn)
 
     try:
-        log.info("Verify %s: fetching torrent %s", verify_id, torrent_url)
+        # Normalise URL encoding: unquote first to avoid double-encoding %20 → %2520
+        _parts = urlsplit(torrent_url)
+        encoded_url = urlunsplit(_parts._replace(path=quote(unquote(_parts.path), safe="/")))
+
+        log.info("Verify %s: fetching torrent %s", verify_id, encoded_url)
         with RemoteClient() as client:
-            result = client.fetch(torrent_url)
+            result = client.fetch(encoded_url)
+
+        if result.status_code == 404:
+            log.warning("Verify %s: no torrent found for %s (404)", verify_id, collection_key)
+            broadcast({
+                "type": "verify_complete",
+                "verify_id": verify_id,
+                "collection_key": collection_key,
+                "level": "no_torrent",
+                "error": "No torrent file found for this collection",
+                "details": {},
+            })
+            return
 
         if result.status_code not in (200, 304):
             raise RemoteFetchError(
-                f"torrent fetch returned HTTP {result.status_code} for {torrent_url}"
+                f"torrent fetch returned HTTP {result.status_code} for {encoded_url}"
             )
 
         torrent_bytes = result.body
         section = collection_key.split("/", 1)[0]
         log.info("Verify %s: manifest-checking %s (%s bytes torrent)", verify_id, collection_key, len(torrent_bytes))
 
-        level, error, details = _manifest_check(
+        level, error, details = manifest_check(
             torrent_bytes,
             section=section,
             archive_root=archive_root,

@@ -88,7 +88,8 @@ The implementation must support BitTorrent v1 torrents and should support v2/hyb
 | `New` | No matching local item exists. | Remote directory or torrent manifest. |
 | `Changed — release marker` | A newer or different upstream torrent marker exists. | Old/new filename, versions, infohashes. |
 | `Changed — manifest` | A file path, size, or torrent manifest differs. | File-level differences. |
-| `Verified current` | Local selected files pass the current torrent's piece check, or a persisted verified manifest exactly matches. | Verification time and infohash/manifest ID. |
+| `Verified current` | Local files pass the current torrent's piece check or manifest verification (all paths and sizes match exactly). | Verification time and infohash/manifest ID. |
+| `Legacy version` | All files are present but larger than the current torrent expects — characteristic of pre-re-encoding originals (e.g. v1 content when the archive now publishes v2 re-encoded files). Content is likely valid; no re-download is needed. | Torrent manifest sizes vs local sizes; count of affected files. |
 | `Present, unverified` | Matching paths exist but have not been verified against a current manifest. | Local scan only. |
 | `Unknown` | Upstream lacks enough information to determine a state cheaply. | Explain what evidence is missing and offer verification. |
 | `Local only` | Local content has no corresponding current upstream item. | Local path and last-seen upstream time. |
@@ -96,6 +97,20 @@ The implementation must support BitTorrent v1 torrents and should support v2/hyb
 | `Downloaded, unverified` | HTTPS transfer completed without a cryptographic verification source. | Remote listing size/date and reason a torrent was unavailable. |
 
 `Unchanged` is not a user-facing state. It conceals uncertainty. The UI uses `Verified current`, `Present, unverified`, or `Unknown` instead.
+
+### Verification levels
+
+The application tracks two verification methods with different cost/confidence trade-offs:
+
+| Level | Method | Cost | Confidence |
+|---|---|---|---|
+| `manifest_verified` | Stat each file; compare size to torrent manifest | Fast — no I/O reads, seconds per collection | Path and size match; no cryptographic guarantee |
+| `piece_verified` | Torrent engine reads and hashes every declared piece | Slow — full disk read | Cryptographically matches published torrent |
+| `has_older_version` | Manifest check: all present, only larger-than-expected sizes | Fast | Content likely valid; not the current torrent version |
+| `unverified` | Manifest check found missing or truncated files | Fast | Known to be incomplete or corrupted |
+| `no_torrent` | No torrent file found upstream | Instant | Cannot verify |
+
+"Check upstream" automatically runs manifest verification for all `present_unverified` collections: it first uses stored database results (no network), then fetches torrents for any collection not yet in the database and runs a fresh manifest check. Piece verification remains on-demand only.
 
 ### Collection evidence
 
@@ -261,9 +276,10 @@ When a torrent covers an already-present collection, Librarian asks the engine t
 ### Efficient comparison stages
 
 1. **Index check:** fetch only section-level listings and identify candidate changes through collection presence, torrent name, URL, version marker, and previously seen infohash.
-2. **Manifest check:** fetch and parse a relevant torrent without contacting peers; compare exact file paths/sizes to the local snapshot.
-3. **Data verification:** ask the torrent engine to piece-check selected local files. This is on-demand because it reads the selected data from disk.
-4. **Deep HTTPS diff:** only for content without usable torrents or for explicit investigation.
+2. **Auto manifest check (during "Check upstream"):** for every `present_unverified` collection, the check runner first consults stored verification results in the database; for any not yet verified, it fetches the torrent and stat-checks each declared file against the local copy. This is fast (no disk I/O reads, no peer contact) and updates status to `Verified current`, `Legacy version`, or flags genuine missing/truncated files.
+3. **On-demand manifest verify:** user-triggered verification of a single collection; same stat-based approach, full file-list details returned to the UI.
+4. **Data verification (piece check):** ask the torrent engine to piece-check selected local files. This is on-demand because it reads all selected data from disk and takes minutes for large collections.
+5. **Deep HTTPS diff:** only for content without usable torrents or for explicit investigation.
 
 This supports fast first answers without pretending that a shallow marker scan proves archive completeness.
 

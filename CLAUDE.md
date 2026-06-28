@@ -86,14 +86,15 @@ These must never be violated:
 
 ## Domain status vocabulary
 
-The eight archive states (defined in `domain/status.py`):
+The archive states (defined in `domain/status.py`):
 
 | State | Key rule |
 |---|---|
 | `New` | No local item exists |
 | `Changed — release marker` | A newer torrent marker exists upstream |
 | `Changed — manifest` | File path/size differs from torrent manifest |
-| `Verified current` | Piece-checked against current torrent, or persisted verified manifest matches |
+| `Verified current` | Piece-checked or manifest-verified against the current torrent |
+| `has_older_version` | All files present; some are larger than the torrent expects — pre-re-encoding originals |
 | `Present, unverified` | Paths exist but not verified against a manifest |
 | `Unknown` | Not enough upstream evidence to classify cheaply |
 | `Local only` | No current upstream counterpart — never auto-deleted |
@@ -101,6 +102,18 @@ The eight archive states (defined in `domain/status.py`):
 | `Downloaded, unverified` | HTTPS transfer complete, no cryptographic verification |
 
 `Unchanged` is not a valid user-facing state.
+
+## Verification levels (stored in `verifications` table)
+
+| Level | Meaning |
+|---|---|
+| `manifest_verified` | All torrent files present with exact sizes — stat-based, no piece hashing |
+| `piece_verified` | Torrent engine completed a full piece recheck |
+| `has_older_version` | All files present; only larger-than-expected mismatches (pre-re-encoding originals) |
+| `unverified` | Missing or truncated files detected |
+| `no_torrent` | No torrent file found upstream; cannot verify |
+
+Manifest verification (`services/verify_runner.py`) is fast (stat only, no I/O reads). Piece verification is slow and triggered separately via the torrent engine. "Check upstream" auto-runs manifest verification for `present_unverified` collections: pass 1 uses stored DB results; pass 2 fetches fresh torrents for any not yet in the DB.
 
 ## Security requirements
 

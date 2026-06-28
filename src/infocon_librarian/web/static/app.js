@@ -39,6 +39,7 @@
         'changed_manifest': 'badge-changed',
         'verified_current': 'badge-verified',
         'manifest_verified': 'badge-verified',
+        'has_older_version': 'badge-legacy',
         'present_unverified': 'badge-unverified',
         'local_only': 'badge-local-only',
         'unknown': 'badge-unknown',
@@ -61,6 +62,7 @@
         'changed_manifest': 'Changed',
         'verified_current': 'Verified',
         'manifest_verified': 'Verified',
+        'has_older_version': 'Legacy',
         'present_unverified': 'Unverified',
         'local_only': 'Local only',
         'unknown': 'Unknown',
@@ -82,6 +84,7 @@
       'changed_manifest':  'File path or size differs from the torrent manifest',
       'verified_current':  'Piece-checked against the current torrent — fully verified',
       'manifest_verified': 'All files present with correct sizes per the torrent manifest',
+      'has_older_version': 'Files are present but are larger than the current torrent expects — likely pre-re-encoding originals (v1 content). Content is probably still valid.',
       'present_unverified':'Files are present locally but have not been verified against a manifest',
       'local_only':        'No upstream counterpart found — will never be auto-deleted',
       'unknown':           'Not enough upstream evidence to classify cheaply',
@@ -96,6 +99,61 @@
       'running':           'Transfer in progress',
       'paused':            'Transfer paused',
     };
+
+    // --- Verify result helpers -----------------------------------------------
+
+    function verifyResultSummary(vr) {
+      if (!vr || !vr.level) return '';
+      const {level, error, total_files, missing_total, size_larger_total, size_smaller_total} = vr;
+      if (level === 'manifest_verified' || level === 'piece_verified') {
+        return `✓ Verified${total_files ? ` (${total_files} files)` : ''}`;
+      }
+      if (level === 'has_older_version') {
+        return `⚠ Legacy (${size_larger_total || '?'} files older)`;
+      }
+      if (level === 'no_torrent') {
+        return '— No torrent';
+      }
+      if (level === 'unverified') {
+        const parts = [];
+        if (missing_total) parts.push(`${missing_total} missing`);
+        if (size_smaller_total) parts.push(`${size_smaller_total} truncated`);
+        if (size_larger_total) parts.push(`${size_larger_total} larger`);
+        return `✗ Issues: ${parts.join(', ') || error || 'unknown'}`;
+      }
+      return '';
+    }
+
+    // Set a details cell to show a collapsible summary that expands into a
+    // full-width row below the parent <tr>.
+    function attachExpandingDetails(detailsEl, tr, summaryText, bodyText) {
+      detailsEl.querySelector('summary').textContent = summaryText;
+      detailsEl.addEventListener('toggle', () => {
+        const existing = tr.nextElementSibling;
+        if (existing && existing.classList.contains('details-expansion-row')) {
+          existing.remove();
+        }
+        if (detailsEl.open) {
+          const cols = tr.cells.length;
+          const expTr = document.createElement('tr');
+          expTr.className = 'details-expansion-row';
+          expTr.innerHTML =
+            `<td colspan="${cols}"><div class="evidence-payload expansion-body">${escHtml(bodyText)}</div></td>`;
+          tr.after(expTr);
+        }
+      });
+    }
+
+    // Populate a .details-cell from a verify_result object (no file lists — summary only).
+    function renderVerifyResultCell(cell, tr, vr) {
+      const summary = verifyResultSummary(vr);
+      if (!summary) return;
+      const body = vr.error ? vr.error : summary;
+      cell.innerHTML = `<details class="details-expandable"><summary></summary></details>`;
+      attachExpandingDetails(cell.querySelector('details'), tr, summary, body);
+    }
+
+    // -------------------------------------------------------------------------
 
     function badgeHtml(status) {
       const tip = _badgeTip[status] ? ` title="${escHtml(_badgeTip[status])}"` : '';
@@ -364,7 +422,8 @@
           '<th>Collection</th>' +
           '<th>Status</th>' +
           '<th></th>' +
-          '<th>Evidence</th>' +
+          '<th>Details</th>' +
+          '<th>Torrent</th>' +
           '</tr></thead>';
 
         const tbody = document.createElement('tbody');
@@ -389,8 +448,13 @@
             `<td>${escHtml(item.display_name || item.key)}</td>` +
             `<td class="status-cell">${badgeHtml(item.status)}</td>` +
             `<td class="action-cell">${verifyBtn}</td>` +
-            `<td><details><summary>Evidence</summary>` +
+            `<td class="details-cell"></td>` +
+            `<td><details><summary>Torrent</summary>` +
             `<div class="evidence-payload">${evidenceJson}</div></details></td>`;
+
+          if (item.verify_result) {
+            renderVerifyResultCell(tr.querySelector('.details-cell'), tr, item.verify_result);
+          }
 
           if (canVerify) {
             tr.querySelector('.btn-verify').addEventListener('click', () => {
@@ -449,22 +513,22 @@
       _verifyingRows.delete(collectionKey);
 
       const verified = level === 'piece_verified' || level === 'manifest_verified';
-      const newStatus = verified ? 'verified_current' : 'changed_manifest';
-      announce(verified
-        ? 'Verified: ' + collectionKey.split('/').pop()
-        : 'Verify found issues in ' + collectionKey.split('/').pop());
+      const legacy   = level === 'has_older_version';
+      const noTorrent = level === 'no_torrent';
+      const newStatus = verified ? 'verified_current' : legacy ? 'has_older_version' : noTorrent ? tr.dataset.status : 'changed_manifest';
+
+      announce(verified   ? 'Verified: ' + collectionKey.split('/').pop()
+             : legacy     ? 'Legacy version: ' + collectionKey.split('/').pop()
+             : noTorrent  ? 'No torrent found for ' + collectionKey.split('/').pop()
+             :               'Verify found issues in ' + collectionKey.split('/').pop());
 
       if (!tr) return;
 
-      // Remove any previous result row for this collection
-      const prevResult = tr.nextElementSibling;
-      if (prevResult && prevResult.classList.contains('verify-result-row')) {
-        prevResult.remove();
+      if (!noTorrent) {
+        tr.dataset.status = newStatus;
+        const statusCell = tr.querySelector('.status-cell');
+        if (statusCell) statusCell.innerHTML = badgeHtml(newStatus);
       }
-
-      tr.dataset.status = newStatus;
-      const statusCell = tr.querySelector('.status-cell');
-      if (statusCell) statusCell.innerHTML = badgeHtml(newStatus);
 
       const actionCell = tr.querySelector('.action-cell');
       if (actionCell) {
@@ -476,49 +540,66 @@
         }
       }
 
-      // Inject result row below the collection row
-      const resultTr = document.createElement('tr');
-      resultTr.className = 'verify-result-row';
+      // Update the Details cell with a collapsible summary that expands full-width
+      const detailsCell = tr.querySelector('.details-cell');
+      if (!detailsCell) return;
+      detailsCell.innerHTML = `<details class="details-expandable"><summary></summary></details>`;
+      const detailsEl = detailsCell.querySelector('details');
 
       if (verified) {
         const n = details.total_files || '?';
-        resultTr.innerHTML =
-          `<td></td><td colspan="4"><div class="verify-result verify-result-pass">` +
-          `✓ All ${escHtml(String(n))} files present with correct sizes` +
-          `</div></td>`;
-        tr.after(resultTr);
-        // Auto-dismiss after 6s
-        setTimeout(() => resultTr.remove(), 6000);
+        attachExpandingDetails(detailsEl, tr,
+          `✓ Verified (${n} files)`,
+          `All ${n} files present with correct sizes.`);
+
+      } else if (legacy) {
+        const larger = details.size_larger || [];
+        const largerTotal = details.size_larger_total || larger.length;
+        const total = details.total_files || '?';
+        let body = `All ${total} files present. ${largerTotal} are larger than the current torrent expects — original pre-re-encoding files. Content is likely still valid.\n`;
+        if (larger.length) {
+          body += `\nLarger-than-expected files:\n` +
+            larger.map(w => `  ${w.path}\n    torrent: ${w.expected.toLocaleString()} B  local: ${w.actual.toLocaleString()} B`).join('\n');
+          if (largerTotal > larger.length) body += `\n  … and ${largerTotal - larger.length} more`;
+        }
+        attachExpandingDetails(detailsEl, tr,
+          `⚠ Legacy (${largerTotal}/${total} larger)`, body);
+
+      } else if (noTorrent) {
+        attachExpandingDetails(detailsEl, tr,
+          '— No torrent',
+          'No torrent file found for this collection. Cannot verify.');
+
       } else {
         const missing = details.missing || [];
-        const wrongSize = details.wrong_size || [];
+        const smaller = details.size_smaller || [];
+        const larger  = details.size_larger  || [];
         const missingTotal = details.missing_total || missing.length;
-        const wrongTotal = details.wrong_size_total || wrongSize.length;
+        const smallerTotal = details.size_smaller_total || smaller.length;
+        const largerTotal  = details.size_larger_total  || larger.length;
 
-        let summary = [];
-        if (missingTotal) summary.push(`${missingTotal} missing`);
-        if (wrongTotal) summary.push(`${wrongTotal} wrong size`);
+        const summaryParts = [];
+        if (missingTotal) summaryParts.push(`${missingTotal} missing`);
+        if (smallerTotal) summaryParts.push(`${smallerTotal} truncated`);
+        if (largerTotal)  summaryParts.push(`${largerTotal} larger`);
 
-        let fileList = '';
+        let body = '';
         if (missing.length) {
-          fileList += '<p class="verify-detail-label">Missing files:</p><ul class="verify-file-list">' +
-            missing.map(p => `<li>${escHtml(p)}</li>`).join('') +
-            (missingTotal > missing.length ? `<li class="verify-more">… and ${missingTotal - missing.length} more</li>` : '') +
-            '</ul>';
+          body += `Missing files:\n` + missing.map(p => `  ${p}`).join('\n') +
+            (missingTotal > missing.length ? `\n  … and ${missingTotal - missing.length} more` : '') + '\n\n';
         }
-        if (wrongSize.length) {
-          fileList += '<p class="verify-detail-label">Size mismatches:</p><ul class="verify-file-list">' +
-            wrongSize.map(w => `<li>${escHtml(w.path)} <span class="verify-size-info">(expected ${w.expected}, got ${w.actual})</span></li>`).join('') +
-            (wrongTotal > wrongSize.length ? `<li class="verify-more">… and ${wrongTotal - wrongSize.length} more</li>` : '') +
-            '</ul>';
+        if (smaller.length) {
+          body += `Truncated / wrong-size:\n` +
+            smaller.map(w => `  ${w.path}\n    expected ${w.expected.toLocaleString()} B, got ${w.actual.toLocaleString()} B`).join('\n') +
+            (smallerTotal > smaller.length ? `\n  … and ${smallerTotal - smaller.length} more` : '') + '\n\n';
         }
-
-        resultTr.innerHTML =
-          `<td></td><td colspan="4"><div class="verify-result verify-result-fail">` +
-          `<strong>Verify found issues:</strong> ${escHtml(summary.join(', '))}` +
-          (fileList ? `<details class="verify-detail"><summary>Show details</summary>${fileList}</details>` : '') +
-          `</div></td>`;
-        tr.after(resultTr);
+        if (larger.length) {
+          body += `Larger than expected:\n` +
+            larger.map(w => `  ${w.path}\n    expected ${w.expected.toLocaleString()} B, got ${w.actual.toLocaleString()} B`).join('\n') +
+            (largerTotal > larger.length ? `\n  … and ${largerTotal - larger.length} more` : '');
+        }
+        attachExpandingDetails(detailsEl, tr,
+          `✗ Issues: ${summaryParts.join(', ')}`, body.trim());
       }
     }
 

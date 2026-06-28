@@ -167,7 +167,9 @@ class TransferMethod(StrEnum):
 class VerificationLevel(StrEnum):
     PIECE_VERIFIED = "piece_verified"
     MANIFEST_VERIFIED = "manifest_verified"
+    HAS_OLDER_VERSION = "has_older_version"   # all present, only larger-than-expected sizes
     UNVERIFIED = "unverified"
+    NO_TORRENT = "no_torrent"                 # no torrent file found upstream
 
 class TransferState(StrEnum):
     DRAFT = "draft"
@@ -319,7 +321,11 @@ Migrations are append-only, exercised from an empty database and the immediately
    - local presence alone -> `Present, unverified`;
    - no enough upstream evidence -> `Unknown`;
    - local absent upstream -> `Local only`.
-7. Implement `infocon-librarian check` human and JSON output.
+7. Implement auto-manifest-verify within the check runner (two-pass):
+   - Pass 1: for each `present_unverified` item, look up stored verification result in the database; if found, promote status (`manifest_verified`/`piece_verified` → `Verified current`; `has_older_version` → `Legacy version`) and attach result to the check payload for the UI.
+   - Pass 2: for items with no stored result, fetch the torrent, run `manifest_check()` (stat-based, no disk reads), store result, and attach to payload. URL-encode torrent paths via `quote(unquote(path), safe="/")` to handle already-encoded URLs.
+   - Torrent URLs that return 404 set `verify_result.level = "no_torrent"` without error.
+8. Implement `infocon-librarian check` human and JSON output.
 
 ### Tests
 
@@ -357,11 +363,11 @@ Migrations are append-only, exercised from an empty database and the immediately
    - normalize torrent file paths through `SafeArchivePath`;
    - reject malformed, unsupported, and unsafe metainfo with a stored reason;
    - persist exact torrent files/sizes and tracker host/protocol list.
-3. Implement `VerifyService`:
-   - build a recheck request from an existing collection and manifest;
-   - transition `PRESENT_UNVERIFIED` -> `CHECKING` -> `VERIFIED_CURRENT` or a failure/changed state;
-   - persist recheck timestamp, selected files, and infohash evidence;
-   - do not allow a recheck job to start network transfer until the transfer plan says so.
+3. Implement `VerifyService` with two verification modes:
+   - **Manifest verify** (`services/verify_runner.py`): fetch the torrent, stat each declared file at `archive_root/section/relative_path`, compare sizes. Fast (no disk reads). Returns `manifest_verified`, `has_older_version` (all present, only larger-than-expected), or `unverified` (missing/truncated files). Distinguishes `size_larger` (local > expected — pre-encoding originals) from `size_smaller` (local < expected — truncated). This runs automatically during "Check upstream" and is also user-triggerable per collection.
+   - **Piece verify** (via `LibtorrentAdapter.recheck()`): full torrent engine piece check; transition `PRESENT_UNVERIFIED` → `CHECKING` → `PIECE_VERIFIED` or failure. Slow — reads all data from disk. On-demand only.
+   - Persist verification level, timestamp, torrent URL, and error summary in `verifications` table.
+   - `libtorrent.force_recheck()` resets the torrent to paused; always call `handle.resume()` immediately after.
 4. Implement `TransferManager` as a single owning worker thread:
    - accepts typed commands from a queue;
    - polls engine alerts/status on a short interval;

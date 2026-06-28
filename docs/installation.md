@@ -4,13 +4,13 @@
 
 - macOS 13 (Ventura) or later (Apple Silicon or Intel)
 - libtorrent-rasterbar 2.0.x (installed via Homebrew)
-- Python 3.11 or 3.12
+- Python 3.14 (the version Homebrew's `libtorrent-rasterbar` formula currently links against)
 - At least 100 MB free disk space for the application data directory
 
 ## Install via Homebrew (recommended)
 
 ```bash
-brew install libtorrent-rasterbar python@3.12
+brew install libtorrent-rasterbar
 pip3 install infocon-librarian
 ```
 
@@ -19,9 +19,15 @@ pip3 install infocon-librarian
 ```bash
 git clone https://github.com/infocon/infocon-librarian
 cd infocon-librarian
-python3 -m venv --system-site-packages .venv   # inherit Homebrew libtorrent
+# The venv must use the same Python that Homebrew compiled libtorrent against.
+# Check: python3 -c "import libtorrent; print(libtorrent.__version__)" after brew install.
+python3.14 -m venv --system-site-packages .venv   # inherit Homebrew libtorrent bindings
 .venv/bin/pip install -e .
 ```
+
+> **Note:** If Homebrew upgrades the `libtorrent-rasterbar` formula to a newer Python
+> version, recreate the venv with the matching Python. The venv's Python version must
+> match the version Homebrew compiled the C extension against.
 
 ## Launching
 

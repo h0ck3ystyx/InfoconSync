@@ -10,13 +10,19 @@ import json
 import logging
 import os
 import threading
+import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+if TYPE_CHECKING:
+    from infocon_librarian.torrent.adapter import TorrentAdapter
 
 from infocon_librarian.remote.client import RemoteClient, RemoteFetchError
 from infocon_librarian.remote.fancyindex import parse_listing
 from infocon_librarian.services.check_service import check_collections
+from infocon_librarian.services.verify_runner import manifest_check
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
 from infocon_librarian.storage.repositories import ArchiveRootRepository, CheckRepository, VerificationRepository
@@ -53,6 +59,16 @@ def _section_url(base_url: str, section: str) -> str:
     return base_url.rstrip("/") + "/" + section.rstrip("/") + "/"
 
 
+def _find_torrent_url(evidence: list[dict]) -> str | None:
+    """Extract torrent_url from remote_listing evidence, if present."""
+    for ev in evidence:
+        if ev.get("kind") == "remote_listing":
+            url = (ev.get("payload") or {}).get("torrent_url")
+            if url:
+                return url
+    return None
+
+
 def run_check(
     *,
     check_id: str,
@@ -61,6 +77,7 @@ def run_check(
     section: str | None,
     broadcast: Callable[[dict[str, Any]], None],
     base_url: str = INFOCON_BASE_URL,
+    adapter: "TorrentAdapter | None" = None,
 ) -> None:
     """Execute a full upstream check and persist results.
 
@@ -139,18 +156,85 @@ def run_check(
                         "evidence": [],
                     })
 
-        # Upgrade present_unverified → verified_current for collections with
-        # a persisted piece_verified result from a prior verification run.
+        # Auto-verify present_unverified collections using stored results or fresh
+        # manifest checks (fetch torrent → stat local files).
         verify_repo = VerificationRepository(conn)
         root_repo = ArchiveRootRepository(conn)
         root_record = root_repo.get_by_path(str(archive_root.resolve()))
-        if root_record is not None:
-            verified_keys = verify_repo.get_verified_keys(root_record.id)
-            if verified_keys:
-                for item in all_results:
-                    ckey = f"{item['section']}/{item['key']}"
-                    if item["status"] == "present_unverified" and ckey in verified_keys:
+        root_id = root_record.id if root_record is not None else None
+
+        if root_id is not None:
+            existing = verify_repo.get_all_latest(root_id)
+
+            # Pass 1: upgrade from stored verification results (no network needed)
+            to_verify: list[tuple[dict, str, str]] = []
+            for item in all_results:
+                if item["status"] != "present_unverified":
+                    continue
+                ckey = f"{item['section']}/{item['key']}"
+                rec = existing.get(ckey)
+                if rec is not None:
+                    if rec.level in ("manifest_verified", "piece_verified"):
                         item["status"] = "verified_current"
+                    elif rec.level == "has_older_version":
+                        item["status"] = "has_older_version"
+                    # Attach stored result summary so UI can render Details cell
+                    item["verify_result"] = {"level": rec.level, "error": rec.error}
+                else:
+                    torrent_url = _find_torrent_url(item.get("evidence", []))
+                    if torrent_url:
+                        to_verify.append((item, ckey, torrent_url))
+
+            # Pass 2: fresh manifest check for collections with no stored result
+            if to_verify and adapter is not None:
+                log.info(
+                    "Check %s: auto-verifying %d unverified collections",
+                    check_id, len(to_verify),
+                )
+                with RemoteClient() as vclient:
+                    for item, ckey, torrent_url in to_verify:
+                        try:
+                            _parts = urlsplit(torrent_url)
+                            encoded_url = urlunsplit(_parts._replace(path=quote(unquote(_parts.path), safe="/")))
+                            resp = vclient.fetch(encoded_url)
+                            if resp.status_code == 404:
+                                log.warning("Check %s: no torrent for %s (404)", check_id, ckey)
+                                item["verify_result"] = {"level": "no_torrent", "error": None}
+                                continue
+                            if resp.status_code not in (200, 304):
+                                continue
+                            level, error, details = manifest_check(
+                                resp.body,
+                                section=item["section"],
+                                archive_root=archive_root,
+                                adapter=adapter,
+                            )
+                            verify_repo.create(
+                                str(uuid.uuid4()),
+                                collection_key=ckey,
+                                archive_root_id=root_id,
+                                level=level,
+                                torrent_url=torrent_url,
+                                error=error,
+                            )
+                            if level == "manifest_verified":
+                                item["status"] = "verified_current"
+                            elif level == "has_older_version":
+                                item["status"] = "has_older_version"
+                            # Attach result counts so UI can render Details cell
+                            item["verify_result"] = {
+                                "level": level,
+                                "error": error,
+                                "total_files": details.get("total_files"),
+                                "missing_total": details.get("missing_total", 0),
+                                "size_larger_total": details.get("size_larger_total", 0),
+                                "size_smaller_total": details.get("size_smaller_total", 0),
+                            }
+                        except Exception as exc:
+                            log.warning(
+                                "Check %s: auto-verify failed for %s: %s",
+                                check_id, ckey, exc,
+                            )
 
         result_json = json.dumps(all_results)
         check_repo.complete(check_id, result_json)
@@ -179,6 +263,7 @@ def start_check_thread(
     section: str | None,
     broadcast: Callable[[dict[str, Any]], None],
     base_url: str = INFOCON_BASE_URL,
+    adapter: "TorrentAdapter | None" = None,
 ) -> threading.Thread:
     """Spin up a daemon thread to run the check. Returns the thread."""
     t = threading.Thread(
@@ -190,6 +275,7 @@ def start_check_thread(
             "section": section,
             "broadcast": broadcast,
             "base_url": base_url,
+            "adapter": adapter,
         },
         daemon=True,
         name=f"check-{check_id[:8]}",

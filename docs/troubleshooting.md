@@ -1,5 +1,22 @@
 # Troubleshooting
 
+## "Legacy version" status after Check
+
+**Symptom:** A collection shows "Legacy version" (teal badge) after running Check upstream.
+
+**Explanation:** All files are present locally, but they are larger than what the current torrent manifest expects. This is the expected result when you have v1 originals (higher-bitrate, uncompressed) and the InfoCon archive has since published v2 re-encoded versions that are smaller. The content is likely still valid — no re-download is needed.
+
+**What to do:** Nothing, if you want to keep the original quality files. If you want the v2 re-encoded version to match the current torrent exactly, select the collection and create a plan — it will re-download the v2 files.
+
+## Status stays "Present, unverified" after Check
+
+**Symptom:** A collection still shows "Present, unverified" even after "Check upstream" completes.
+
+**Causes:**
+1. **No torrent published upstream** — The Details column will show "— No torrent". Nothing to verify against; HTTPS fallback is the only option.
+2. **Torrent URL returned 404** — The upstream listing references a torrent that is no longer available. Report to InfoCon administrators.
+3. **Collection not found in the current section listing** — The check may have scanned a different section. Try running Check with `--section NAME`.
+
 ## No peers / torrent stalled
 
 **Symptom:** Transfer shows "Awaiting peers" or progress is zero.

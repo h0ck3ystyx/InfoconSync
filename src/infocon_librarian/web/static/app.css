@@ -89,6 +89,7 @@
     .badge-changed          { background: #fff8e1; color: #e65100; }
     .badge-verified         { background: #e8f5e9; color: #1b5e20; }
     .badge-unverified       { background: #fce4ec; color: #880e4f; }
+    .badge-legacy           { background: #e0f2f1; color: #004d40; }
     .badge-local-only       { background: #f3e5f5; color: #4a148c; }
     .badge-unknown          { background: #f5f5f5; color: #616161; }
     .badge-pending          { background: #e8eaf6; color: #1a237e; }
@@ -288,37 +289,18 @@
     .btn-verify:disabled { opacity: .5; cursor: not-allowed; }
     .action-cell { white-space: nowrap; width: 6rem; }
 
-    /* ---- Verify result row ---- */
-    .verify-result-row td { padding: 0; border-bottom: 1px solid #eee; }
-    .verify-result {
-      padding: .5rem .75rem .5rem 2.5rem;
-      font-size: .83rem;
-      border-left: 3px solid transparent;
+    /* ---- Details cell and full-width expansion row ---- */
+    .details-cell { font-size: .85rem; color: #555; }
+    .details-expandable > summary { cursor: pointer; color: #555; font-size: .85rem; }
+    .details-expandable > summary::-webkit-details-marker { display: none; }
+    .details-expansion-row td { padding: 0; }
+    .expansion-body {
+      margin: 0;
+      border-radius: 0;
+      border-left: none;
+      border-right: none;
+      max-height: 400px;
     }
-    .verify-result-pass {
-      background: #f1f8e9;
-      border-left-color: #66bb6a;
-      color: #2e7d32;
-    }
-    .verify-result-fail {
-      background: #fff8e1;
-      border-left-color: #ffa726;
-      color: #4e342e;
-    }
-    .verify-detail { margin-top: .4rem; }
-    .verify-detail > summary { cursor: pointer; color: #795548; font-size: .82rem; }
-    .verify-detail-label { margin: .4rem 0 .15rem; font-weight: 600; font-size: .8rem; }
-    .verify-file-list {
-      margin: 0 0 .4rem 1.25rem;
-      padding: 0;
-      font-size: .8rem;
-      font-family: ui-monospace, monospace;
-      max-height: 200px;
-      overflow-y: auto;
-    }
-    .verify-file-list li { margin: .1rem 0; }
-    .verify-more { color: #999; font-style: italic; font-family: inherit; }
-    .verify-size-info { color: #888; }
 
     /* ---- Transfers note ---- */
     .transfer-note { font-size: .82rem; color: #777; font-style: italic; margin: .25rem 0 .75rem; }

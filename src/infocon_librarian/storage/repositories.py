@@ -234,7 +234,6 @@ class VerificationRepository:
             "WHERE archive_root_id=? ORDER BY verified_at DESC",
             (archive_root_id,),
         ).fetchall()
-        # For each key, take only the most recent result
         seen: set[str] = set()
         verified: set[str] = set()
         _VERIFIED_LEVELS = {"piece_verified", "manifest_verified"}
@@ -244,3 +243,29 @@ class VerificationRepository:
                 if level in _VERIFIED_LEVELS:
                     verified.add(key)
         return verified
+
+    def get_all_latest_levels(self, archive_root_id: str) -> dict[str, str]:
+        """Return {collection_key: level} for the most recent verification of each key."""
+        rows = self._conn.execute(
+            "SELECT collection_key, level FROM verifications "
+            "WHERE archive_root_id=? ORDER BY verified_at DESC",
+            (archive_root_id,),
+        ).fetchall()
+        result: dict[str, str] = {}
+        for key, level in rows:
+            if key not in result:
+                result[key] = level
+        return result
+
+    def get_all_latest(self, archive_root_id: str) -> dict[str, "VerificationRecord"]:
+        """Return {collection_key: record} for the most recent verification of each key."""
+        rows = self._conn.execute(
+            "SELECT * FROM verifications WHERE archive_root_id=? ORDER BY verified_at DESC",
+            (archive_root_id,),
+        ).fetchall()
+        result: dict[str, VerificationRecord] = {}
+        for row in rows:
+            rec = VerificationRecord(**dict(row))
+            if rec.collection_key not in result:
+                result[rec.collection_key] = rec
+        return result

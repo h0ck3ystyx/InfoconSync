@@ -8,6 +8,15 @@
 - It never contacts public trackers beyond those published in the `.torrent` files you have reviewed
 - It never automatically downgrade a torrent transfer to HTTPS
 
+## What "Check upstream" does on the network
+
+Running **Check upstream** makes the following outbound HTTPS connections:
+
+1. Fetches section-level directory listings from `infocon.org` (one request per section).
+2. For each `present_unverified` collection that has no stored verification result, fetches the collection's `.torrent` file (one request per collection, stat-based only — no torrent swarm is joined).
+
+No peers, trackers, DHT, or other BitTorrent network components are contacted during a check. Torrent files are fetched over HTTPS and inspected locally. The infohash and tracker list are extracted but the swarm is not joined until you explicitly start a transfer.
+
 ## Privacy disclosure before every torrent plan
 
 Before any torrent transfer begins, the application displays:

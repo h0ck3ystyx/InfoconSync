@@ -121,6 +121,7 @@ def create_check() -> Response:
         archive_root=Path(root_info.canonical_path),
         section=section,
         broadcast=_broadcast,
+        adapter=current_app.config.get("_ADAPTER"),
     )
 
     return jsonify({"check_id": check_id, "status": "running", "section": section}), 202
