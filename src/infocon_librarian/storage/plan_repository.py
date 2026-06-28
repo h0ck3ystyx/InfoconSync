@@ -78,6 +78,11 @@ class PlanRepository:
         )
         self._conn.commit()
 
+    def delete_plan(self, plan_id: str) -> None:
+        self._conn.execute("DELETE FROM plan_items WHERE plan_id = ?", (plan_id,))
+        self._conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+        self._conn.commit()
+
     def add_item(
         self,
         plan_id: str,

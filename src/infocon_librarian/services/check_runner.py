@@ -103,9 +103,18 @@ def run_check(
         log.info("Check %s: scanning sections %s", check_id, sections_to_scan)
 
         all_results: list[dict[str, Any]] = []
+        total_sections = len(sections_to_scan)
 
         with RemoteClient() as client:
-            for sec in sections_to_scan:
+            for sec_idx, sec in enumerate(sections_to_scan, 1):
+                broadcast({
+                    "type": "check_progress",
+                    "check_id": check_id,
+                    "phase": "fetch",
+                    "section": sec,
+                    "current": sec_idx,
+                    "total": total_sections,
+                })
                 sec_path = root_path / sec
                 url = _section_url(base_url, sec)
                 log.info("Check %s: fetching %s", check_id, url)
@@ -176,14 +185,33 @@ def run_check(
                 if rec is not None:
                     if rec.level in ("manifest_verified", "piece_verified"):
                         item["status"] = "verified_current"
+                        item["verify_result"] = {"level": rec.level, "error": rec.error}
                     elif rec.level == "has_older_version":
                         item["status"] = "has_older_version"
-                    # Attach stored result summary so UI can render Details cell
-                    item["verify_result"] = {"level": rec.level, "error": rec.error}
+                        item["verify_result"] = {"level": rec.level, "error": rec.error}
+                    else:
+                        # unverified — set status but still re-verify to get full
+                        # file details for the UI (stored record only has level+error)
+                        item["status"] = "changed_manifest"
+                        torrent_url = _find_torrent_url(item.get("evidence", []))
+                        if torrent_url:
+                            to_verify.append((item, ckey, torrent_url))
+                        else:
+                            item["verify_result"] = {"level": rec.level, "error": rec.error}
                 else:
                     torrent_url = _find_torrent_url(item.get("evidence", []))
                     if torrent_url:
                         to_verify.append((item, ckey, torrent_url))
+
+            # Pass 1b: attach stored verify results to non-present_unverified collections
+            # so the UI can show the last-known verification state (e.g. CHANGED with Issues)
+            for item in all_results:
+                if "verify_result" in item:
+                    continue
+                ckey = f"{item['section']}/{item['key']}"
+                rec = existing.get(ckey)
+                if rec is not None:
+                    item["verify_result"] = {"level": rec.level, "error": rec.error}
 
             # Pass 2: fresh manifest check for collections with no stored result
             if to_verify and adapter is not None:
@@ -191,8 +219,16 @@ def run_check(
                     "Check %s: auto-verifying %d unverified collections",
                     check_id, len(to_verify),
                 )
+                total_verify = len(to_verify)
+                broadcast({
+                    "type": "check_progress",
+                    "check_id": check_id,
+                    "phase": "verify",
+                    "current": 0,
+                    "total": total_verify,
+                })
                 with RemoteClient() as vclient:
-                    for item, ckey, torrent_url in to_verify:
+                    for verify_idx, (item, ckey, torrent_url) in enumerate(to_verify, 1):
                         try:
                             _parts = urlsplit(torrent_url)
                             encoded_url = urlunsplit(_parts._replace(path=quote(unquote(_parts.path), safe="/")))
@@ -221,13 +257,20 @@ def run_check(
                                 item["status"] = "verified_current"
                             elif level == "has_older_version":
                                 item["status"] = "has_older_version"
+                            elif level == "unverified":
+                                item["status"] = "changed_manifest"
                             # Attach result counts so UI can render Details cell
                             item["verify_result"] = {
                                 "level": level,
                                 "error": error,
                                 "total_files": details.get("total_files"),
+                                "missing_dirs": details.get("missing_dirs", []),
+                                "missing_dirs_total": details.get("missing_dirs_total", 0),
+                                "missing": details.get("missing", []),
                                 "missing_total": details.get("missing_total", 0),
+                                "size_larger": details.get("size_larger", []),
                                 "size_larger_total": details.get("size_larger_total", 0),
+                                "size_smaller": details.get("size_smaller", []),
                                 "size_smaller_total": details.get("size_smaller_total", 0),
                             }
                         except Exception as exc:
@@ -235,6 +278,13 @@ def run_check(
                                 "Check %s: auto-verify failed for %s: %s",
                                 check_id, ckey, exc,
                             )
+                        broadcast({
+                            "type": "check_progress",
+                            "check_id": check_id,
+                            "phase": "verify",
+                            "current": verify_idx,
+                            "total": total_verify,
+                        })
 
         result_json = json.dumps(all_results)
         check_repo.complete(check_id, result_json)

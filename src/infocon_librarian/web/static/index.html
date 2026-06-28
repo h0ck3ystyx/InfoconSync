@@ -48,21 +48,27 @@
         <select id="filter-status" aria-label="Filter by status">
           <option value="">All statuses</option>
           <option value="new">New</option>
-          <option value="changed_marker">Changed (marker)</option>
-          <option value="changed_manifest">Changed (manifest)</option>
+          <option value="changed_marker">Needs update (marker)</option>
+          <option value="changed_manifest">Needs update (manifest)</option>
           <option value="verified_current">Verified</option>
           <option value="present_unverified">Present, unverified</option>
           <option value="local_only">Local only</option>
           <option value="unknown">Unknown</option>
         </select>
-        <button class="btn" id="btn-check-now" type="button">Check upstream</button>
+        <button class="btn" id="btn-check-now" type="button">Check infocon.org</button>
         <button class="btn btn-primary" id="btn-plan-selected" type="button" disabled>
-          Plan selected
+          Create Plan
         </button>
+        <button class="btn btn-reset" id="btn-reset-db" type="button">Clear cache</button>
+      </div>
+
+      <div id="check-progress-bar" hidden>
+        <progress id="check-progress-el"></progress>
+        <span id="check-progress-label"></span>
       </div>
 
       <div id="collections-container">
-        <p id="collections-empty">No collections loaded. Click <strong>Check upstream</strong> to fetch.</p>
+        <p id="collections-empty">No collections loaded. Click <strong>Check infocon.org</strong> to fetch.</p>
       </div>
     </section>
 

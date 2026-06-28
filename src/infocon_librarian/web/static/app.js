@@ -58,8 +58,8 @@
     function badgeLabel(status) {
       const map = {
         'new': 'New',
-        'changed_marker': 'Changed',
-        'changed_manifest': 'Changed',
+        'changed_marker': 'Needs update',
+        'changed_manifest': 'Needs update',
         'verified_current': 'Verified',
         'manifest_verified': 'Verified',
         'has_older_version': 'Legacy',
@@ -104,7 +104,7 @@
 
     function verifyResultSummary(vr) {
       if (!vr || !vr.level) return '';
-      const {level, error, total_files, missing_total, size_larger_total, size_smaller_total} = vr;
+      const {level, error, total_files, missing_dirs_total, missing_total, size_larger_total, size_smaller_total} = vr;
       if (level === 'manifest_verified' || level === 'piece_verified') {
         return `✓ Verified${total_files ? ` (${total_files} files)` : ''}`;
       }
@@ -116,6 +116,7 @@
       }
       if (level === 'unverified') {
         const parts = [];
+        if (missing_dirs_total) parts.push(`${missing_dirs_total} new folder${missing_dirs_total !== 1 ? 's' : ''}`);
         if (missing_total) parts.push(`${missing_total} missing`);
         if (size_smaller_total) parts.push(`${size_smaller_total} truncated`);
         if (size_larger_total) parts.push(`${size_larger_total} larger`);
@@ -126,7 +127,7 @@
 
     // Set a details cell to show a collapsible summary that expands into a
     // full-width row below the parent <tr>.
-    function attachExpandingDetails(detailsEl, tr, summaryText, bodyText) {
+    function attachExpandingDetails(detailsEl, tr, summaryText, bodyText, extraClass) {
       detailsEl.querySelector('summary').textContent = summaryText;
       detailsEl.addEventListener('toggle', () => {
         const existing = tr.nextElementSibling;
@@ -137,20 +138,69 @@
           const cols = tr.cells.length;
           const expTr = document.createElement('tr');
           expTr.className = 'details-expansion-row';
+          const cls = 'evidence-payload expansion-body' + (extraClass ? ' ' + extraClass : '');
           expTr.innerHTML =
-            `<td colspan="${cols}"><div class="evidence-payload expansion-body">${escHtml(bodyText)}</div></td>`;
+            `<td colspan="${cols}"><div class="${cls}">${escHtml(bodyText)}</div></td>`;
           tr.after(expTr);
         }
       });
     }
 
-    // Populate a .details-cell from a verify_result object (no file lists — summary only).
+    // Build the expansion body text for an issues-type verify result.
+    function buildIssuesBody(vr) {
+      const missingDirs = vr.missing_dirs || [];
+      const missing = vr.missing || [];
+      const smaller = vr.size_smaller || [];
+      const larger  = vr.size_larger  || [];
+      const missingDirsTotal = vr.missing_dirs_total || missingDirs.length;
+      const missingTotal = vr.missing_total || missing.length;
+      const smallerTotal = vr.size_smaller_total || smaller.length;
+      const largerTotal  = vr.size_larger_total  || larger.length;
+      let body = '';
+      if (missingDirs.length) {
+        body += `New folders:\n` + missingDirs.map(d => `  ${d}`).join('\n') +
+          (missingDirsTotal > missingDirs.length ? `\n  … and ${missingDirsTotal - missingDirs.length} more` : '') + '\n\n';
+      }
+      if (missing.length) {
+        body += `Missing files:\n` + missing.map(p => `  ${p}`).join('\n') +
+          (missingTotal > missing.length ? `\n  … and ${missingTotal - missing.length} more` : '') + '\n\n';
+      }
+      if (smaller.length) {
+        body += `Truncated / wrong-size:\n` +
+          smaller.map(w => `  ${w.path}\n    expected ${w.expected.toLocaleString()} B, got ${w.actual.toLocaleString()} B`).join('\n') +
+          (smallerTotal > smaller.length ? `\n  … and ${smallerTotal - smaller.length} more` : '') + '\n\n';
+      }
+      if (larger.length) {
+        body += `Larger than expected:\n` +
+          larger.map(w => `  ${w.path}\n    expected ${w.expected.toLocaleString()} B, got ${w.actual.toLocaleString()} B`).join('\n') +
+          (largerTotal > larger.length ? `\n  … and ${largerTotal - larger.length} more` : '');
+      }
+      return body.trim();
+    }
+
+    // Populate a .details-cell from a verify_result object.
     function renderVerifyResultCell(cell, tr, vr) {
       const summary = verifyResultSummary(vr);
       if (!summary) return;
-      const body = vr.error ? vr.error : summary;
       cell.innerHTML = `<details class="details-expandable"><summary></summary></details>`;
-      attachExpandingDetails(cell.querySelector('details'), tr, summary, body);
+      const detailsEl = cell.querySelector('details');
+      if (vr.level === 'unverified') {
+        const body = buildIssuesBody(vr) || vr.error || summary;
+        attachExpandingDetails(detailsEl, tr, summary, body, 'expansion-body-issues');
+      } else if (vr.level === 'has_older_version') {
+        const larger = vr.size_larger || [];
+        const largerTotal = vr.size_larger_total || larger.length;
+        const total = vr.total_files || '?';
+        let body = `All ${total} files present. ${largerTotal} are larger than the current torrent expects — original pre-re-encoding files.\n`;
+        if (larger.length) {
+          body += `\nLarger-than-expected files:\n` +
+            larger.map(w => `  ${w.path}\n    torrent: ${w.expected.toLocaleString()} B  local: ${w.actual.toLocaleString()} B`).join('\n');
+          if (largerTotal > larger.length) body += `\n  … and ${largerTotal - larger.length} more`;
+        }
+        attachExpandingDetails(detailsEl, tr, summary, body);
+      } else {
+        attachExpandingDetails(detailsEl, tr, summary, vr.error || summary);
+      }
     }
 
     // -------------------------------------------------------------------------
@@ -241,12 +291,14 @@
     function handleSSEEvent(ev) {
       if (ev.type === 'check_complete') {
         stopCheckPoll();
+        hideCheckProgress();
         loadCheck(ev.check_id);
       } else if (ev.type === 'check_failed') {
         stopCheckPoll();
+        hideCheckProgress();
         const btn = document.getElementById('btn-check-now');
         btn.disabled = false;
-        btn.textContent = 'Check upstream';
+        btn.textContent = 'Check infocon.org';
         announce('Check failed: ' + (ev.error || 'unknown error'));
       } else if (ev.type === 'plan_created') {
         // Refresh plans list if tab is active
@@ -258,6 +310,8 @@
         if (document.getElementById('btn-transfers').getAttribute('aria-selected') === 'true') {
           loadTransfers();
         }
+      } else if (ev.type === 'check_progress') {
+        updateCheckProgress(ev);
       } else if (ev.type === 'verify_complete') {
         onVerifyFinished(ev.collection_key, ev.level, ev.error, ev.details || {});
       } else if (ev.type === 'verify_failed') {
@@ -290,10 +344,31 @@
       }, 4000);
     }
 
+    function updateCheckProgress(ev) {
+      const bar = document.getElementById('check-progress-bar');
+      const label = document.getElementById('check-progress-label');
+      const prog = document.getElementById('check-progress-el');
+      if (!bar) return;
+      bar.hidden = false;
+      if (ev.phase === 'fetch') {
+        if (label) label.textContent = `Fetching ${ev.section}… (${ev.current}/${ev.total})`;
+        if (prog) prog.removeAttribute('value');
+      } else if (ev.phase === 'verify') {
+        if (label) label.textContent = `Checking manifests… (${ev.current}/${ev.total})`;
+        if (prog && ev.total > 0) prog.value = ev.current / ev.total;
+      }
+    }
+
+    function hideCheckProgress() {
+      const bar = document.getElementById('check-progress-bar');
+      if (bar) bar.hidden = true;
+    }
+
     function onCheckFinished(data) {
       const btn = document.getElementById('btn-check-now');
       btn.disabled = false;
-      btn.textContent = 'Check upstream';
+      btn.textContent = 'Check infocon.org';
+      hideCheckProgress();
       if (data.state === 'complete' && data.results) {
         announce('Check complete — ' + data.count + ' collections found');
         renderCollections(data.results);
@@ -321,10 +396,45 @@
           startCheckPoll(data.check_id);
         } else {
           btn.disabled = false;
-          btn.textContent = 'Check upstream';
+          btn.textContent = 'Check infocon.org';
+          hideCheckProgress();
           announce('Check failed: ' + (data.error || 'unknown'));
         }
       });
+    });
+
+    // ---- Clear cache ----
+    let _resetPending = false;
+    let _resetTimer = null;
+
+    document.getElementById('btn-reset-db').addEventListener('click', () => {
+      const btn = document.getElementById('btn-reset-db');
+      if (!_resetPending) {
+        _resetPending = true;
+        btn.textContent = 'Confirm clear?';
+        btn.classList.add('btn-reset-confirm');
+        _resetTimer = setTimeout(() => {
+          _resetPending = false;
+          btn.textContent = 'Clear cache';
+          btn.classList.remove('btn-reset-confirm');
+        }, 4000);
+      } else {
+        clearTimeout(_resetTimer);
+        _resetPending = false;
+        btn.textContent = 'Clearing…';
+        btn.disabled = true;
+        api('POST', '/admin/reset').then(({ ok }) => {
+          btn.disabled = false;
+          btn.textContent = 'Clear cache';
+          btn.classList.remove('btn-reset-confirm');
+          if (ok) {
+            renderCollections([]);
+            announce('Cache cleared — click Check infocon.org to refresh');
+          } else {
+            announce('Clear failed');
+          }
+        });
+      }
     });
 
     // ---- Collections — grouped by section ----
@@ -337,13 +447,16 @@
         if (!map[sec]) map[sec] = [];
         map[sec].push(item);
       }
-      // Sort each section's items case-insensitively by display name
+      // Sort each section's items: new (entire directory missing) first, then alphabetical
       for (const sec of Object.keys(map)) {
-        map[sec].sort((a, b) =>
-          (a.display_name || a.key).toLowerCase().localeCompare(
+        map[sec].sort((a, b) => {
+          const aNew = a.status === 'new' ? 0 : 1;
+          const bNew = b.status === 'new' ? 0 : 1;
+          if (aNew !== bNew) return aNew - bNew;
+          return (a.display_name || a.key).toLowerCase().localeCompare(
             (b.display_name || b.key).toLowerCase()
-          )
-        );
+          );
+        });
       }
       return map;
     }
@@ -418,7 +531,7 @@
         table.setAttribute('aria-label', section + ' collections');
         table.innerHTML =
           '<thead><tr>' +
-          '<th style="width:2rem"></th>' +
+          '<th class="col-cb"></th>' +
           '<th>Collection</th>' +
           '<th>Status</th>' +
           '<th></th>' +
@@ -494,13 +607,13 @@
 
     function startVerify(collectionId, tr) {
       const btn = tr.querySelector('.btn-verify');
-      if (btn) { btn.disabled = true; btn.textContent = 'Verifying…'; }
+      if (btn) { btn.disabled = true; btn.textContent = 'Verifying…'; btn.classList.add('verifying'); }
       _verifyingRows.set(collectionId, tr);
       announce('Verification started for ' + collectionId.split('/').pop());
 
       api('POST', '/verify', { collection_id: collectionId }).then(({ ok, data }) => {
         if (!ok) {
-          if (btn) { btn.disabled = false; btn.textContent = 'Verify'; }
+          if (btn) { btn.disabled = false; btn.textContent = 'Verify'; btn.classList.remove('verifying'); }
           _verifyingRows.delete(collectionId);
           announce('Verify failed: ' + (data.detail || data.error || 'unknown'));
         }
@@ -536,7 +649,7 @@
           actionCell.innerHTML = '';
         } else {
           const btn = actionCell.querySelector('.btn-verify');
-          if (btn) { btn.disabled = false; btn.textContent = 'Retry verify'; }
+          if (btn) { btn.disabled = false; btn.textContent = 'Retry verify'; btn.classList.remove('verifying'); }
         }
       }
 
@@ -571,35 +684,18 @@
           'No torrent file found for this collection. Cannot verify.');
 
       } else {
-        const missing = details.missing || [];
-        const smaller = details.size_smaller || [];
-        const larger  = details.size_larger  || [];
-        const missingTotal = details.missing_total || missing.length;
-        const smallerTotal = details.size_smaller_total || smaller.length;
-        const largerTotal  = details.size_larger_total  || larger.length;
-
+        const missingDirsTotal = details.missing_dirs_total || (details.missing_dirs || []).length;
+        const missingTotal = details.missing_total || (details.missing || []).length;
+        const smallerTotal = details.size_smaller_total || (details.size_smaller || []).length;
+        const largerTotal  = details.size_larger_total  || (details.size_larger  || []).length;
         const summaryParts = [];
+        if (missingDirsTotal) summaryParts.push(`${missingDirsTotal} new folder${missingDirsTotal !== 1 ? 's' : ''}`);
         if (missingTotal) summaryParts.push(`${missingTotal} missing`);
         if (smallerTotal) summaryParts.push(`${smallerTotal} truncated`);
         if (largerTotal)  summaryParts.push(`${largerTotal} larger`);
-
-        let body = '';
-        if (missing.length) {
-          body += `Missing files:\n` + missing.map(p => `  ${p}`).join('\n') +
-            (missingTotal > missing.length ? `\n  … and ${missingTotal - missing.length} more` : '') + '\n\n';
-        }
-        if (smaller.length) {
-          body += `Truncated / wrong-size:\n` +
-            smaller.map(w => `  ${w.path}\n    expected ${w.expected.toLocaleString()} B, got ${w.actual.toLocaleString()} B`).join('\n') +
-            (smallerTotal > smaller.length ? `\n  … and ${smallerTotal - smaller.length} more` : '') + '\n\n';
-        }
-        if (larger.length) {
-          body += `Larger than expected:\n` +
-            larger.map(w => `  ${w.path}\n    expected ${w.expected.toLocaleString()} B, got ${w.actual.toLocaleString()} B`).join('\n') +
-            (largerTotal > larger.length ? `\n  … and ${largerTotal - larger.length} more` : '');
-        }
         attachExpandingDetails(detailsEl, tr,
-          `✗ Issues: ${summaryParts.join(', ')}`, body.trim());
+          `✗ Issues: ${summaryParts.join(', ')}`,
+          buildIssuesBody(details), 'expansion-body-issues');
       }
     }
 
@@ -661,7 +757,7 @@
     function renderPlansList(plans) {
       const container = document.getElementById('plans-list');
       if (!plans.length) {
-        container.innerHTML = '<p>No plans yet. Select collections and click <strong>Plan selected</strong>.</p>';
+        container.innerHTML = '<p>No plans yet. Select collections and click <strong>Create Plan</strong>.</p>';
         return;
       }
       container.innerHTML = '';
@@ -669,19 +765,37 @@
         const card = document.createElement('div');
         card.className = 'card plan-summary-card';
         card.dataset.planId = plan.plan_id;
+        const canDelete = plan.state !== 'running';
         card.innerHTML =
           `<div class="plan-summary-row">` +
           `<code class="plan-id">${escHtml(plan.plan_id.slice(0, 8))}…</code>` +
           `${badgeHtml(plan.state)}` +
           `<span class="plan-meta">${plan.item_count} item${plan.item_count !== 1 ? 's' : ''}</span>` +
           `<span class="plan-meta">${fmtDate(plan.created_at)}</span>` +
-          `<button class="btn btn-sm" data-plan-id="${escHtml(plan.plan_id)}">View</button>` +
+          `<button class="btn btn-sm btn-view-plan" data-plan-id="${escHtml(plan.plan_id)}">View</button>` +
+          (canDelete ? `<button class="btn btn-sm btn-delete-plan" data-plan-id="${escHtml(plan.plan_id)}">Delete</button>` : '') +
           `</div>`;
-        card.querySelector('button').addEventListener('click', () => {
+        card.querySelector('.btn-view-plan').addEventListener('click', () => {
           api('GET', '/plans/' + plan.plan_id).then(({ ok, data }) => {
             if (ok) showPlanDetail(data);
           });
         });
+        if (canDelete) {
+          card.querySelector('.btn-delete-plan').addEventListener('click', () => {
+            api('DELETE', '/plans/' + plan.plan_id).then(({ ok }) => {
+              if (ok) {
+                card.remove();
+                announce('Plan deleted');
+                if (!document.querySelector('#plans-list .plan-summary-card')) {
+                  document.getElementById('plans-list').innerHTML =
+                    '<p>No plans yet. Select collections and click <strong>Create Plan</strong>.</p>';
+                }
+              } else {
+                announce('Could not delete plan');
+              }
+            });
+          });
+        }
         container.appendChild(card);
       }
     }

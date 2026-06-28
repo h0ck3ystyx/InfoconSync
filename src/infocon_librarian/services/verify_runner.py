@@ -71,10 +71,33 @@ def manifest_check(
             elif actual < tf.size:
                 size_smaller.append({"path": tf.relative_path, "expected": tf.size, "actual": actual})
 
+    # Split missing into wholly-absent subdirectories vs individual missing files.
+    # libtorrent file_path() format: CollectionName/SubDir/file.ext
+    # parts[0] = torrent root (collection name), parts[1] = first-level subdir.
+    # A subdir is "entirely missing" when every torrent file under it is absent.
+    from collections import defaultdict
+    _subdir_total: dict[str, int] = defaultdict(int)
+    _subdir_missing: dict[str, int] = defaultdict(int)
+    _missing_set = set(missing)
+    for tf in manifest.files:
+        _parts = tf.relative_path.split("/")
+        if len(_parts) >= 3:  # CollectionName/SubDir/file
+            _subdir_total[_parts[1]] += 1
+            if tf.relative_path in _missing_set:
+                _subdir_missing[_parts[1]] += 1
+    _fully_missing = {d for d, total in _subdir_total.items() if _subdir_missing.get(d, 0) == total}
+    missing_dirs = sorted(_fully_missing)
+    missing_files = [
+        m for m in missing
+        if not (len(m.split("/")) >= 3 and m.split("/")[1] in _fully_missing)
+    ]
+
     details: dict = {
         "total_files": len(manifest.files),
-        "missing": missing[:_DETAIL_CAP],
-        "missing_total": len(missing),
+        "missing_dirs": missing_dirs[:_DETAIL_CAP],
+        "missing_dirs_total": len(missing_dirs),
+        "missing": missing_files[:_DETAIL_CAP],
+        "missing_total": len(missing_files),
         "size_larger": size_larger[:_DETAIL_CAP],
         "size_larger_total": len(size_larger),
         "size_smaller": size_smaller[:_DETAIL_CAP],
@@ -89,10 +112,14 @@ def manifest_check(
         summary = f"{len(size_larger)} file(s) are larger than the current torrent expects"
         return "has_older_version", summary, details
 
-    # Missing files or truncated files → genuine problem
+    # Missing dirs/files or truncated files → genuine problem
     parts = []
-    if missing:
-        parts.append(f"{len(missing)} missing")
+    if missing_dirs and missing_files:
+        parts.append(f"{len(missing_dirs)} missing folder(s), {len(missing_files)} missing file(s)")
+    elif missing_dirs:
+        parts.append(f"{len(missing_dirs)} missing folder(s)")
+    elif missing_files:
+        parts.append(f"{len(missing_files)} missing")
     if size_smaller:
         parts.append(f"{len(size_smaller)} truncated/wrong-size")
     if size_larger:

@@ -306,6 +306,30 @@ def get_plan(plan_id: str) -> Response:
     })
 
 
+@api_bp.route("/plans/<plan_id>", methods=["DELETE"])
+@require_session
+@require_csrf
+def delete_plan(plan_id: str) -> Response:
+    if not _is_valid_uuid(plan_id):
+        return jsonify({"error": "not_found"}), 404
+
+    db = getattr(g, "db", None)
+    if db is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    from infocon_librarian.storage.plan_repository import PlanRepository
+
+    repo = PlanRepository(db)
+    record = repo.get_plan(plan_id)
+    if record is None:
+        return jsonify({"error": "not_found"}), 404
+    if record.state == "running":
+        return jsonify({"error": "cannot_delete_running_plan"}), 409
+
+    repo.delete_plan(plan_id)
+    return jsonify({"deleted": plan_id}), 200
+
+
 @api_bp.route("/plans/<plan_id>/start", methods=["POST"])
 @require_session
 @require_csrf
@@ -496,6 +520,42 @@ def create_verify() -> Response:
         "torrent_url": torrent_url,
         "state": "running",
     }), 202
+
+
+# ---------------------------------------------------------------------------
+# Admin
+# ---------------------------------------------------------------------------
+
+_RESET_ORDER = [
+    "jobs",
+    "receipts",
+    "plan_items",
+    "plans",
+    "snapshot_entries",
+    "snapshots",
+    "torrent_files",
+    "torrent_manifests",
+    "remote_entries",
+    "remote_fetches",
+    "evidence",
+    "checks",
+    "verifications",
+    "archive_roots",
+]
+
+
+@api_bp.route("/admin/reset", methods=["POST"])
+@require_session
+@require_csrf
+def admin_reset() -> Response:
+    """Clear all data tables, preserving schema_version."""
+    db = getattr(g, "db", None)
+    if db is None:
+        return jsonify({"error": "not_configured"}), 503
+    for table in _RESET_ORDER:
+        db.execute(f"DELETE FROM {table}")  # noqa: S608
+    db.commit()
+    return jsonify({"reset": True}), 200
 
 
 # ---------------------------------------------------------------------------
