@@ -127,6 +127,44 @@ def create_check() -> Response:
     return jsonify({"check_id": check_id, "status": "running", "section": section}), 202
 
 
+@api_bp.route("/checks/latest")
+@require_session
+def get_latest_check() -> Response:
+    db = getattr(g, "db", None)
+    root_info = getattr(g, "archive_root_info", None)
+    if db is None or root_info is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    import json as _json  # noqa: PLC0415
+
+    from infocon_librarian.storage.repositories import (  # noqa: PLC0415
+        ArchiveRootRepository,
+        CheckRepository,
+    )
+
+    root_repo = ArchiveRootRepository(db)
+    root_record = root_repo.get_by_path(str(root_info.canonical_path))
+    if root_record is None:
+        return jsonify({"error": "not_found"}), 404
+
+    check_repo = CheckRepository(db)
+    record = check_repo.get_latest_completed(root_record.id)
+    if record is None:
+        return jsonify({"error": "not_found"}), 404
+
+    results = _json.loads(record.result_json) if record.result_json else []
+    return jsonify({
+        "check_id": record.id,
+        "state": record.state,
+        "section": record.section,
+        "started_at": record.started_at,
+        "completed_at": record.completed_at,
+        "error": record.error,
+        "results": results,
+        "count": len(results),
+    })
+
+
 @api_bp.route("/checks/<check_id>")
 @require_session
 def get_check(check_id: str) -> Response:

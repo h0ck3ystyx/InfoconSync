@@ -273,6 +273,13 @@
       updateConnStatus(ok && data.status === 'ok');
     }).catch(() => updateConnStatus(false));
 
+    // Load the last completed check on startup so collections are visible immediately
+    api('GET', '/checks/latest').then(({ ok, data }) => {
+      if (ok && data.results && data.results.length) {
+        renderCollections(data.results);
+      }
+    });
+
     // ---- SSE ----
     let evtSource = null;
     function connectSSE() {
