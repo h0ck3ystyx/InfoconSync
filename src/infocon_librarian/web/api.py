@@ -6,13 +6,14 @@ import queue
 import re
 import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 # Allowed format for collection_ids submitted by the browser (section/key).
 # Prevents path traversal — no dots-dots, no slashes beyond the one separator.
 _COLLECTION_ID_RE = re.compile(r'^[A-Za-z0-9_.() -]+/[A-Za-z0-9_.() -]+$')
 
-from flask import Blueprint, Response, g, jsonify, request, stream_with_context
+from flask import Blueprint, Response, current_app, g, jsonify, request, stream_with_context
 
 from infocon_librarian.web.auth import require_csrf, require_session
 
@@ -376,10 +377,13 @@ def start_plan(plan_id: str) -> Response:
         return jsonify({"error": "not_found"}), 404
 
     db = getattr(g, "db", None)
-    if db is None:
+    root_info = getattr(g, "archive_root_info", None)
+    db_path: Path | None = current_app.config.get("_DB_PATH")
+    if db is None or root_info is None or db_path is None:
         return jsonify({"error": "not_configured"}), 503
 
-    from infocon_librarian.storage.plan_repository import PlanRepository
+    from infocon_librarian.services.http_transfer_runner import start_http_transfer_thread  # noqa: PLC0415
+    from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
 
     repo = PlanRepository(db)
     record = repo.get_plan(plan_id)
@@ -391,6 +395,17 @@ def start_plan(plan_id: str) -> Response:
 
     repo.update_plan_state(plan_id, "running")
     _broadcast({"type": "plan_started", "plan_id": plan_id})
+
+    # Spawn the HTTP transfer worker for any pending HTTPS items
+    items = repo.list_items(plan_id)
+    if any(it.method == "https" and it.status == "pending" for it in items):
+        start_http_transfer_thread(
+            plan_id,
+            db_path=db_path,
+            archive_root=Path(root_info.canonical_path),
+            broadcast=_broadcast,
+        )
+
     return jsonify({"plan_id": plan_id, "state": "running"}), 200
 
 

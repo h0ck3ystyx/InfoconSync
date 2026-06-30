@@ -49,6 +49,7 @@
         'failed': 'badge-failed',
         'draft': 'badge-pending',
         'preflighted': 'badge-pending',
+        'downloading': 'badge-changed',
         'running': 'badge-changed',
         'paused': 'badge-unknown',
       };
@@ -67,6 +68,7 @@
         'local_only': 'Local only',
         'unknown': 'Unknown',
         'pending': 'Pending',
+        'downloading': 'Downloading',
         'blocked': 'Blocked',
         'complete': 'Complete',
         'failed': 'Failed',
@@ -323,6 +325,10 @@
         onVerifyFinished(ev.collection_key, ev.level, ev.error, ev.details || {});
       } else if (ev.type === 'verify_failed') {
         onVerifyFinished(ev.collection_key, 'unverified', ev.error, {});
+      } else if (ev.type === 'item_status') {
+        onItemStatusChanged(ev);
+      } else if (ev.type === 'plan_status') {
+        onPlanStatusChanged(ev);
       } else if (ev.type === 'progress') {
         updateProgress(ev);
       }
@@ -706,6 +712,29 @@
       }
     }
 
+    // ---- Transfer SSE handlers ----
+
+    function onItemStatusChanged(ev) {
+      // Refresh any open plan detail that contains this item
+      const detail = document.querySelector(`.plan-detail[data-plan-id="${CSS.escape(ev.plan_id)}"]`);
+      if (detail) {
+        api('GET', '/plans/' + ev.plan_id).then(({ ok, data }) => {
+          if (ok) showPlanDetail(data);
+        });
+      }
+    }
+
+    function onPlanStatusChanged(ev) {
+      const msg = ev.state === 'complete'
+        ? 'Transfer complete!'
+        : 'Transfer failed' + (ev.error ? ': ' + ev.error : '');
+      announce(msg);
+      loadPlans();
+      if (document.getElementById('btn-transfers').getAttribute('aria-selected') === 'true') {
+        loadTransfers();
+      }
+    }
+
     // ---- Filter / search ----
     document.getElementById('search-collections').addEventListener('input', applyFilter);
     document.getElementById('filter-status').addEventListener('change', applyFilter);
@@ -883,7 +912,7 @@
       if (action === 'start-plan') {
         api('POST', '/plans/' + id + '/start', {}).then(({ ok, data }) => {
           if (ok) {
-            announce('Transfer started (torrent engine not yet active — status only)');
+            announce('Transfer started');
             loadPlans();
             loadTransfers();
           } else {
@@ -934,7 +963,6 @@
           ).join('');
           card.innerHTML =
             `<h2>Plan <code>${escHtml(plan.plan_id.slice(0, 8))}…</code> ${badgeHtml(plan.state)}</h2>` +
-            `<p class="transfer-note">Note: file transfer requires the torrent engine to be active.</p>` +
             `<table><thead><tr><th>Path</th><th>Method</th><th>Status</th><th>Size</th></tr></thead>` +
             `<tbody>${rows}</tbody></table>`;
           container.appendChild(card);
