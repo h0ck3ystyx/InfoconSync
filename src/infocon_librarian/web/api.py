@@ -521,10 +521,13 @@ def approve_http_fallback(item_id: str) -> Response:
         return jsonify({"error": "not_found"}), 404
 
     db = getattr(g, "db", None)
-    if db is None:
+    root_info = getattr(g, "archive_root_info", None)
+    db_path: Path | None = current_app.config.get("_DB_PATH")
+    if db is None or root_info is None or db_path is None:
         return jsonify({"error": "not_configured"}), 503
 
-    from infocon_librarian.storage.plan_repository import PlanRepository
+    from infocon_librarian.services.http_transfer_runner import start_http_transfer_thread  # noqa: PLC0415
+    from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
 
     repo = PlanRepository(db)
     item = repo.get_item(item_id)
@@ -534,9 +537,19 @@ def approve_http_fallback(item_id: str) -> Response:
     if item.status != "blocked":
         return jsonify({"error": "not_blocked", "current_status": item.status}), 409
 
-    repo.update_item_status(item_id, "pending")
+    # Switch this item from torrent → HTTPS and start the HTTP worker for the plan
+    https_url = f"https://infocon.org/{item.destination_relpath}/"
+    repo.update_item_to_https(item_id, https_url)
     _broadcast({"type": "http_fallback_approved", "item_id": item_id})
-    return jsonify({"item_id": item_id, "status": "pending"}), 200
+
+    start_http_transfer_thread(
+        item.plan_id,
+        db_path=db_path,
+        archive_root=Path(root_info.canonical_path),
+        broadcast=_broadcast,
+    )
+
+    return jsonify({"item_id": item_id, "status": "pending", "method": "https"}), 200
 
 
 # ---------------------------------------------------------------------------

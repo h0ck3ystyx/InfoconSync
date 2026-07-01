@@ -141,6 +141,17 @@ class PlanRepository:
         )
         self._conn.commit()
 
+    def update_item_to_https(self, item_id: str, https_url: str) -> None:
+        """Switch a torrent item to HTTPS fallback, preserving the torrent URL."""
+        self._conn.execute(
+            """UPDATE plan_items
+               SET method = 'https', url = ?, torrent_url = url,
+                   fallback_reason = 'swarm_unreachable', status = 'pending'
+               WHERE id = ?""",
+            (https_url, item_id),
+        )
+        self._conn.commit()
+
     def add_receipt(self, plan_id: str, json_path: str) -> ReceiptRecord:
         rec_id = str(uuid.uuid4())
         now = _now()

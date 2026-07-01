@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 _RECEIPTS_DIRNAME = "receipts"
 _POLL_INTERVAL = 3.0    # seconds between status polls
 _ITEM_TIMEOUT = 4 * 3600  # 4-hour per-item ceiling
+_STALL_TIMEOUT = 300.0  # 5 min with 0 peers + no progress → blocked
 
 
 def _fetch_torrent_bytes(torrent_url: str) -> bytes:
@@ -126,13 +127,15 @@ def run_torrent_transfer(
                 })
                 continue
 
-            # Poll until the torrent finishes, times out, or errors
+            # Poll until the torrent finishes, times out, stalls, or errors
             deadline = time.monotonic() + _ITEM_TIMEOUT
             final_state = "failed"
             last_error: str | None = None
             last_logged_state: str | None = None
             last_log_time = time.monotonic()
             _LOG_INTERVAL = 30.0  # log progress at most once per 30 s
+            last_progress_bytes = 0
+            stall_since: float | None = None  # when 0-peer/no-progress stall started
 
             while time.monotonic() < deadline:
                 try:
@@ -178,6 +181,26 @@ def run_torrent_transfer(
                     last_error = progress.last_error
                     break
 
+                # Stall detection: downloading with 0 peers and no byte progress
+                if (
+                    progress.state == TransferState.DOWNLOADING
+                    and progress.num_peers == 0
+                    and progress.downloaded_bytes <= last_progress_bytes
+                ):
+                    if stall_since is None:
+                        stall_since = now
+                    elif now - stall_since >= _STALL_TIMEOUT:
+                        log.warning(
+                            "Torrent %s: swarm unreachable after %.0f s — marking blocked",
+                            item.destination_relpath, now - stall_since,
+                        )
+                        final_state = "blocked"
+                        last_error = "swarm_unreachable"
+                        break
+                else:
+                    stall_since = None
+                    last_progress_bytes = progress.downloaded_bytes
+
                 time.sleep(_POLL_INTERVAL)
             else:
                 last_error = "transfer_timeout"
@@ -190,6 +213,12 @@ def run_torrent_transfer(
                 outcomes[item.id] = {
                     "status": "complete",
                     "verification_level": "downloaded_unverified",
+                }
+            elif final_state == "blocked":
+                repo.update_item_status(item.id, "blocked")
+                outcomes[item.id] = {
+                    "status": "blocked",
+                    "error": last_error or "swarm_unreachable",
                 }
             else:
                 repo.update_item_status(item.id, "failed")
