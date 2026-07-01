@@ -544,10 +544,18 @@ def approve_http_fallback(item_id: str) -> Response:
     if item.status != "blocked":
         return jsonify({"error": "not_blocked", "current_status": item.status}), 409
 
-    # Switch this item from torrent → HTTPS and start the HTTP worker for the plan
+    from infocon_librarian.storage.plan_repository import PlanRepository as _PR  # noqa: PLC0415
+
+    # Switch this item from torrent → HTTPS and reset the plan to running
     https_url = f"https://infocon.org/{item.destination_relpath}/"
     repo.update_item_to_https(item_id, https_url)
-    _broadcast({"type": "http_fallback_approved", "item_id": item_id})
+    plan_repo = _PR(db)
+    plan_repo.update_plan_state(item.plan_id, "running")
+
+    # Notify browser before starting the thread so Transfers tab reloads
+    _broadcast({"type": "http_fallback_approved", "item_id": item_id,
+                "plan_id": item.plan_id})
+    _broadcast({"type": "plan_status", "plan_id": item.plan_id, "state": "running"})
 
     start_http_transfer_thread(
         item.plan_id,

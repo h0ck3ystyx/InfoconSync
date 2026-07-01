@@ -240,12 +240,15 @@ def run_torrent_transfer(
 
         # If there are also HTTPS items they will update plan state themselves.
         # Only finalize here when all plan items are torrent-only.
+        # If any item is blocked (swarm unreachable), leave the plan running —
+        # the user may approve an HTTP fallback, which takes over finalization.
         all_items = repo.list_items(plan_id)
         http_pending = any(
             it.method == "https" and it.status in ("pending", "downloading")
             for it in all_items
         )
-        if not http_pending:
+        has_blocked = any(o.get("status") == "blocked" for o in outcomes.values())
+        if not http_pending and not has_blocked:
             all_ok = all(o["status"] == "complete" for o in outcomes.values())
             plan_final = "complete" if all_ok else "failed"
             repo.update_plan_state(plan_id, plan_final)

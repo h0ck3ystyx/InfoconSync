@@ -745,10 +745,8 @@
     }
 
     function onPlanStatusChanged(ev) {
-      const msg = ev.state === 'complete'
-        ? 'Transfer complete!'
-        : 'Transfer failed' + (ev.error ? ': ' + ev.error : '');
-      announce(msg);
+      if (ev.state === 'complete') announce('Transfer complete!');
+      else if (ev.state === 'failed') announce('Transfer failed' + (ev.error ? ': ' + ev.error : ''));
       loadPlans();
       if (document.getElementById('btn-transfers').getAttribute('aria-selected') === 'true') {
         loadTransfers();
@@ -963,14 +961,19 @@
 
     function _progressLabel(p) {
       if (!p) return 'Waiting for progress…';
-      let text = fmt(p.downloaded_bytes) + ' / ' + fmt(p.total_bytes);
       if (p.torrent_state) {
+        let text = fmt(p.downloaded_bytes) + ' / ' + fmt(p.total_bytes);
         const peers = p.num_peers || 0;
         text += ' · ' + peers + ' peer' + (peers !== 1 ? 's' : '');
         const rate = p.download_rate || 0;
         if (rate > 0) text += ' · ' + fmt(rate) + '/s';
+        return text;
       }
-      return text;
+      // HTTPS — progress is per-file; show running total with "file" suffix
+      const fileText = p.total_bytes
+        ? fmt(p.downloaded_bytes) + ' / ' + fmt(p.total_bytes) + ' (this file)'
+        : fmt(p.downloaded_bytes) + ' downloaded';
+      return fileText;
     }
 
     function _itemProgressHtml(item) {
