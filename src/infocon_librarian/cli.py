@@ -266,7 +266,10 @@ def _cmd_launch(args: argparse.Namespace) -> None:
 
     try:
         from infocon_librarian.torrent.libtorrent_adapter import LibtorrentAdapter  # noqa: PLC0415
-        adapter = LibtorrentAdapter()
+        # Bind to all interfaces so the tracker can announce a routable address
+        # and outgoing peer connections can use the real NIC. Flask stays on
+        # loopback; torrent networking uses a separate binding per the spec.
+        adapter = LibtorrentAdapter(listen_interfaces="0.0.0.0:0")
         print("Torrent engine       ready")
     except Exception as exc:  # ImportError or libtorrent init failure
         adapter = None
