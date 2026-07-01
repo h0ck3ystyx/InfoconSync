@@ -729,7 +729,7 @@
           } else if (ev.status === 'downloading' || ev.status === 'checking') {
             progressCell.innerHTML =
               `<progress id="progress-${escHtml(ev.item_id)}" max="1" value="0" class="xfer-progress"></progress>` +
-              `<span id="progress-label-${escHtml(ev.item_id)}" class="progress-detail"></span>`;
+              `<span id="progress-label-${escHtml(ev.item_id)}" class="progress-detail">Waiting for progress…</span>`;
           } else if (ev.status === 'complete' || ev.status === 'failed') {
             progressCell.innerHTML = '';
           }
@@ -961,10 +961,24 @@
       });
     }
 
+    function _progressLabel(p) {
+      if (!p) return 'Waiting for progress…';
+      let text = fmt(p.downloaded_bytes) + ' / ' + fmt(p.total_bytes);
+      if (p.torrent_state) {
+        const peers = p.num_peers || 0;
+        text += ' · ' + peers + ' peer' + (peers !== 1 ? 's' : '');
+        const rate = p.download_rate || 0;
+        if (rate > 0) text += ' · ' + fmt(rate) + '/s';
+      }
+      return text;
+    }
+
     function _itemProgressHtml(item) {
       if (item.status === 'downloading' || item.status === 'checking') {
-        return `<progress id="progress-${escHtml(item.id)}" max="1" value="0" class="xfer-progress"></progress>` +
-               `<span id="progress-label-${escHtml(item.id)}" class="progress-detail"></span>`;
+        const p = item.progress;
+        const val = (p && p.total_bytes) ? p.downloaded_bytes / p.total_bytes : 0;
+        return `<progress id="progress-${escHtml(item.id)}" max="1" value="${val}" class="xfer-progress"></progress>` +
+               `<span id="progress-label-${escHtml(item.id)}" class="progress-detail">${escHtml(_progressLabel(p))}</span>`;
       }
       if (item.status === 'blocked') {
         return `<button class="btn btn-sm use-https-btn" data-item-id="${escHtml(item.id)}">Use HTTPS</button>` +
@@ -1066,15 +1080,7 @@
       const total = ev.total_bytes || 1;
       el.value = ev.downloaded_bytes / total;
       const label = document.getElementById('progress-label-' + ev.item_id);
-      if (!label) return;
-      let text = fmt(ev.downloaded_bytes) + ' / ' + fmt(ev.total_bytes);
-      if (ev.torrent_state) {
-        const peers = ev.num_peers || 0;
-        text += ' · ' + peers + ' peer' + (peers !== 1 ? 's' : '');
-        const rate = ev.download_rate || 0;
-        if (rate > 0) text += ' · ' + fmt(rate) + '/s';
-      }
-      label.textContent = text;
+      if (label) label.textContent = _progressLabel(ev);
     }
 
     window.connectSSE = connectSSE;

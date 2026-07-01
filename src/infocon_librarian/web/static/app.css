@@ -388,7 +388,8 @@
     }
     .progress-detail {
       display: block;
-      margin-top: 3px;
-      font-size: .78rem;
-      color: #666;
+      margin-top: 4px;
+      font-size: .85rem;
+      color: #333;
+      font-variant-numeric: tabular-nums;
     }

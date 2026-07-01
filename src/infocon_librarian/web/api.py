@@ -23,8 +23,14 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 _sse_lock = threading.Lock()
 _sse_queues: dict[str, queue.Queue] = {}  # type: ignore[type-arg]
 
+# Latest progress snapshot per plan item (item_id -> progress dict)
+# Lets get_plan return live bytes/peers/rate on initial load.
+_item_progress_cache: dict[str, dict[str, Any]] = {}
+
 
 def _broadcast(event: dict[str, Any]) -> None:
+    if event.get("type") == "progress":
+        _item_progress_cache[event["item_id"]] = event
     with _sse_lock:
         dead = []
         for key, q in _sse_queues.items():
@@ -365,6 +371,7 @@ def get_plan(plan_id: str) -> Response:
                 "destination_relpath": i.destination_relpath,
                 "fallback_reason": i.fallback_reason,
                 "size_bytes": i.size_bytes,
+                "progress": _item_progress_cache.get(i.id),
             }
             for i in items
         ],
