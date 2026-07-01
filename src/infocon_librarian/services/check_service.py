@@ -47,6 +47,10 @@ def check_collections(
     torrent_map = associate_torrents(remote_dirs, torrents)
 
     remote_keys = {e.display_name for e in remote_dirs}
+    # Case-insensitive sets for matching against local directory names (NTFS/HFS+ are
+    # case-insensitive but case-preserving, so exact casing may differ from remote).
+    local_dirs_lower = {d.lower(): d for d in local_dirs}
+    remote_keys_lower = {k.lower() for k in remote_keys}
 
     results: list[CheckResult] = []
 
@@ -54,7 +58,7 @@ def check_collections(
     for entry in remote_dirs:
         name = entry.display_name
         ckey = CollectionKey(section=section, key=name)
-        present_locally = name in local_dirs
+        present_locally = name.lower() in local_dirs_lower
         current_torrent = torrent_map.get(name)
         previous_torrent = prev.get(name)
 
@@ -90,7 +94,7 @@ def check_collections(
 
     # Local-only collections (present locally but absent from remote listing)
     for name in local_dirs:
-        if name not in remote_keys:
+        if name.lower() not in remote_keys_lower:
             ckey = CollectionKey(section=section, key=name)
             results.append(
                 CheckResult(

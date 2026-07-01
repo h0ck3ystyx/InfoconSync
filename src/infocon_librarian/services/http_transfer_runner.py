@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -65,7 +66,7 @@ def _crawl_files(
     for entry in entries:
         if not entry.url.startswith(collection_url):
             continue  # never follow links outside the collection
-        rel = entry.url[len(collection_url):].lstrip("/")
+        rel = unquote(entry.url[len(collection_url):].lstrip("/"))
         if not rel:
             continue
         if entry.kind == "file":

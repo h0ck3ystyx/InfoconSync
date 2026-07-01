@@ -276,18 +276,44 @@ def create_plan() -> Response:
     plan_repo = PlanRepository(db)
     record = plan_repo.create_plan(root_record.id)
 
+    # Build a lookup of torrent URLs from the latest completed check
+    from infocon_librarian.storage.repositories import CheckRepository  # noqa: PLC0415
+    check_repo = CheckRepository(db)
+    latest_check = check_repo.get_latest_completed(root_record.id)
+    torrent_urls_by_cid: dict[str, str] = {}
+    if latest_check and latest_check.result_json:
+        for chk_item in json.loads(latest_check.result_json):
+            ckey = f"{chk_item.get('section', '')}/{chk_item.get('key', '')}"
+            for ev in chk_item.get("evidence", []):
+                if ev.get("kind") == "remote_listing":
+                    turl = ev.get("payload", {}).get("torrent_url")
+                    if turl:
+                        torrent_urls_by_cid[ckey] = turl
+
     infocon_base = "https://infocon.org/"
     for cid in collection_ids:
         # cid already validated: "section/key" — no path traversal possible
-        plan_repo.add_item(
-            record.id,
-            method="https",
-            status="pending",
-            collection_key=cid,
-            destination_relpath=cid,
-            url=infocon_base + cid + "/",
-            fallback_reason="no_torrent_fetched",
-        )
+        torrent_url = torrent_urls_by_cid.get(cid)
+        if torrent_url:
+            plan_repo.add_item(
+                record.id,
+                method="torrent",
+                status="pending",
+                collection_key=cid,
+                destination_relpath=cid,
+                url=torrent_url,
+                fallback_reason=None,
+            )
+        else:
+            plan_repo.add_item(
+                record.id,
+                method="https",
+                status="pending",
+                collection_key=cid,
+                destination_relpath=cid,
+                url=infocon_base + cid + "/",
+                fallback_reason="no_torrent",
+            )
 
     items = plan_repo.list_items(record.id)
     _broadcast({"type": "plan_created", "plan_id": record.id})
@@ -382,7 +408,12 @@ def start_plan(plan_id: str) -> Response:
     if db is None or root_info is None or db_path is None:
         return jsonify({"error": "not_configured"}), 503
 
-    from infocon_librarian.services.http_transfer_runner import start_http_transfer_thread  # noqa: PLC0415
+    from infocon_librarian.services.http_transfer_runner import (
+        start_http_transfer_thread,  # noqa: PLC0415
+    )
+    from infocon_librarian.services.torrent_transfer_runner import (
+        start_torrent_transfer_thread,  # noqa: PLC0415,E501
+    )
     from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
 
     repo = PlanRepository(db)
@@ -393,16 +424,38 @@ def start_plan(plan_id: str) -> Response:
     if record.state not in ("draft", "preflighted"):
         return jsonify({"error": "invalid_state", "current_state": record.state}), 409
 
+    adapter = current_app.config.get("_ADAPTER")
     repo.update_plan_state(plan_id, "running")
     _broadcast({"type": "plan_started", "plan_id": plan_id})
 
-    # Spawn the HTTP transfer worker for any pending HTTPS items
     items = repo.list_items(plan_id)
+    archive_root_path = Path(root_info.canonical_path)
+
+    # Spawn torrent worker for pending torrent items (requires adapter)
+    has_torrent = any(it.method == "torrent" and it.status == "pending" for it in items)
+    if has_torrent:
+        if adapter is not None:
+            start_torrent_transfer_thread(
+                plan_id,
+                db_path=db_path,
+                archive_root=archive_root_path,
+                adapter=adapter,
+                broadcast=_broadcast,
+            )
+        else:
+            # No adapter — torrent items cannot run; mark them blocked so the user knows
+            for it in items:
+                if it.method == "torrent" and it.status == "pending":
+                    repo.update_item_status(it.id, "blocked")
+            _broadcast({"type": "plan_warning", "plan_id": plan_id,
+                        "warning": "torrent_adapter_unavailable"})
+
+    # Spawn HTTPS worker for pending HTTPS items
     if any(it.method == "https" and it.status == "pending" for it in items):
         start_http_transfer_thread(
             plan_id,
             db_path=db_path,
-            archive_root=Path(root_info.canonical_path),
+            archive_root=archive_root_path,
             broadcast=_broadcast,
         )
 

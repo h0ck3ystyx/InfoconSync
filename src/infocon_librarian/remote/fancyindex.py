@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from infocon_librarian.domain.models import RemoteEntry
 
@@ -60,7 +60,7 @@ def parse_listing(html: str, base_url: str) -> list[RemoteEntry]:
                 url=canonical,
                 parent_url=base_url,
                 kind=kind,
-                display_name=(display or href).rstrip("/"),
+                display_name=(display or unquote(href)).rstrip("/"),
                 size_hint=_parse_size(row.get("cells", [])),
                 modified_hint=_parse_modified(row.get("cells", [])),
             )
