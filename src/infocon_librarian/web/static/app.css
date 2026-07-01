@@ -379,3 +379,16 @@
       font: inherit;
       font-size: .85rem;
     }
+
+    /* Transfer progress */
+    .xfer-progress {
+      width: 100%;
+      display: block;
+      height: 6px;
+    }
+    .progress-detail {
+      display: block;
+      margin-top: 3px;
+      font-size: .78rem;
+      color: #666;
+    }

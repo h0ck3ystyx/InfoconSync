@@ -151,6 +151,9 @@ def run_torrent_transfer(
                     "plan_id": plan_id,
                     "downloaded_bytes": progress.downloaded_bytes,
                     "total_bytes": progress.total_bytes,
+                    "num_peers": progress.num_peers,
+                    "download_rate": progress.download_rate,
+                    "torrent_state": progress.state.value,
                 })
 
                 state_str = progress.state.value

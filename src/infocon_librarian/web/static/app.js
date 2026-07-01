@@ -715,6 +715,26 @@
     // ---- Transfer SSE handlers ----
 
     function onItemStatusChanged(ev) {
+      // Update live status/progress cells in the Transfers tab
+      const statusEl = document.getElementById('item-status-' + ev.item_id);
+      if (statusEl) {
+        statusEl.innerHTML = badgeHtml(ev.status);
+        const progressCell = document.getElementById('item-progress-' + ev.item_id);
+        if (progressCell) {
+          if (ev.status === 'blocked') {
+            progressCell.innerHTML =
+              `<button class="btn btn-sm use-https-btn" data-item-id="${escHtml(ev.item_id)}">Use HTTPS</button>` +
+              `<span class="progress-detail"> Swarm unreachable — no peers</span>`;
+            _wireHttpsFallbackButtons(progressCell.closest('table').closest('.card'));
+          } else if (ev.status === 'downloading' || ev.status === 'checking') {
+            progressCell.innerHTML =
+              `<progress id="progress-${escHtml(ev.item_id)}" max="1" value="0" class="xfer-progress"></progress>` +
+              `<span id="progress-label-${escHtml(ev.item_id)}" class="progress-detail"></span>`;
+          } else if (ev.status === 'complete' || ev.status === 'failed') {
+            progressCell.innerHTML = '';
+          }
+        }
+      }
       // Refresh any open plan detail that contains this item
       const detail = document.querySelector(`.plan-detail[data-plan-id="${CSS.escape(ev.plan_id)}"]`);
       if (detail) {
@@ -941,6 +961,34 @@
       });
     }
 
+    function _itemProgressHtml(item) {
+      if (item.status === 'downloading' || item.status === 'checking') {
+        return `<progress id="progress-${escHtml(item.id)}" max="1" value="0" class="xfer-progress"></progress>` +
+               `<span id="progress-label-${escHtml(item.id)}" class="progress-detail"></span>`;
+      }
+      if (item.status === 'blocked') {
+        return `<button class="btn btn-sm use-https-btn" data-item-id="${escHtml(item.id)}">Use HTTPS</button>` +
+               `<span class="progress-detail">Swarm unreachable — no peers</span>`;
+      }
+      return fmt(item.size_bytes);
+    }
+
+    function _wireHttpsFallbackButtons(card) {
+      card.querySelectorAll('.use-https-btn').forEach(btn => {
+        btn.addEventListener('click', () => approveHttpFallback(btn.dataset.itemId));
+      });
+    }
+
+    function approveHttpFallback(itemId) {
+      api('POST', '/items/' + itemId + '/approve-http-fallback').then(({ ok, data }) => {
+        if (!ok) {
+          announce('HTTP fallback failed: ' + ((data && data.error) || 'unknown'));
+          return;
+        }
+        announce('Switched to HTTPS — downloading…');
+      });
+    }
+
     function renderTransfers(plans) {
       const container = document.getElementById('transfers-list');
       if (!plans.length) {
@@ -954,18 +1002,19 @@
           const card = document.createElement('div');
           card.className = 'card';
           const rows = (data.items || []).map(item =>
-            `<tr>` +
+            `<tr id="item-row-${escHtml(item.id)}">` +
             `<td>${escHtml(item.destination_relpath)}</td>` +
             `<td>${escHtml(item.method)}</td>` +
-            `<td>${badgeHtml(item.status)}</td>` +
-            `<td>${fmt(item.size_bytes)}</td>` +
+            `<td id="item-status-${escHtml(item.id)}">${badgeHtml(item.status)}</td>` +
+            `<td id="item-progress-${escHtml(item.id)}">${_itemProgressHtml(item)}</td>` +
             `</tr>`
           ).join('');
           card.innerHTML =
             `<h2>Plan <code>${escHtml(plan.plan_id.slice(0, 8))}…</code> ${badgeHtml(plan.state)}</h2>` +
-            `<table><thead><tr><th>Path</th><th>Method</th><th>Status</th><th>Size</th></tr></thead>` +
+            `<table><thead><tr><th>Path</th><th>Method</th><th>Status</th><th>Progress</th></tr></thead>` +
             `<tbody>${rows}</tbody></table>`;
           container.appendChild(card);
+          _wireHttpsFallbackButtons(card);
         });
       }
     }
@@ -1017,7 +1066,15 @@
       const total = ev.total_bytes || 1;
       el.value = ev.downloaded_bytes / total;
       const label = document.getElementById('progress-label-' + ev.item_id);
-      if (label) label.textContent = fmt(ev.downloaded_bytes) + ' / ' + fmt(ev.total_bytes);
+      if (!label) return;
+      let text = fmt(ev.downloaded_bytes) + ' / ' + fmt(ev.total_bytes);
+      if (ev.torrent_state) {
+        const peers = ev.num_peers || 0;
+        text += ' · ' + peers + ' peer' + (peers !== 1 ? 's' : '');
+        const rate = ev.download_rate || 0;
+        if (rate > 0) text += ' · ' + fmt(rate) + '/s';
+      }
+      label.textContent = text;
     }
 
     window.connectSSE = connectSSE;
