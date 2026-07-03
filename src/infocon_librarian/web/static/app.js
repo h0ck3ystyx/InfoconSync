@@ -252,6 +252,7 @@
         if (id === 'btn-plans') loadPlans();
         if (id === 'btn-transfers') loadTransfers();
         if (id === 'btn-receipts') loadReceipts();
+        if (id === 'btn-settings') loadSettings();
       });
       tab.addEventListener('keydown', e => {
         const list = [...tabs];
@@ -1102,6 +1103,36 @@
       const label = document.getElementById('progress-label-' + ev.item_id);
       if (label) label.textContent = _progressLabel(ev);
     }
+
+    // ---- Settings ----
+    function loadSettings() {
+      api('GET', '/settings').then(({ ok, data }) => {
+        if (!ok) return;
+        document.getElementById('setting-stall-timeout').value = data.torrent_stall_timeout ?? 300;
+        document.getElementById('setting-dl-limit').value = data.torrent_download_limit ?? 0;
+        document.getElementById('setting-ul-limit').value = data.torrent_upload_limit ?? 0;
+        document.getElementById('setting-archive-root').textContent = data.archive_root || '—';
+      });
+    }
+
+    function saveSettings() {
+      const timeout = parseInt(document.getElementById('setting-stall-timeout').value, 10);
+      const dl = parseInt(document.getElementById('setting-dl-limit').value, 10);
+      const ul = parseInt(document.getElementById('setting-ul-limit').value, 10);
+      const statusEl = document.getElementById('settings-save-status');
+
+      api('PUT', '/settings', {
+        torrent_stall_timeout: isNaN(timeout) ? 300 : Math.max(0, timeout),
+        torrent_download_limit: isNaN(dl) ? 0 : Math.max(0, dl),
+        torrent_upload_limit: isNaN(ul) ? 0 : Math.max(0, ul),
+      }).then(({ ok }) => {
+        statusEl.textContent = ok ? 'Saved.' : 'Save failed.';
+        statusEl.className = 'settings-status ' + (ok ? 'settings-ok' : 'settings-err');
+        setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'settings-status'; }, 2500);
+      });
+    }
+
+    document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
 
     window.connectSSE = connectSSE;
 

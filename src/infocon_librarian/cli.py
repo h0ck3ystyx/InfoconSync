@@ -259,6 +259,17 @@ def _cmd_launch(args: argparse.Namespace) -> None:
     cfg.ensure_dirs()
     configure_logging(log_dir=cfg.log_dir)
 
+    # Read persisted settings before initialising the adapter
+    from infocon_librarian.storage.database import open_db as _open_db  # noqa: PLC0415
+    from infocon_librarian.storage.migrations import migrate as _migrate  # noqa: PLC0415
+    from infocon_librarian.storage.settings_repository import SettingsRepository  # noqa: PLC0415
+    _sdb = _open_db(cfg.db_path)
+    _migrate(_sdb)
+    _sr = SettingsRepository(_sdb)
+    _dl_kbps = _sr.get_int("torrent_download_limit")
+    _ul_kbps = _sr.get_int("torrent_upload_limit")
+    _sdb.close()
+
     # Claim a free loopback port before the server starts
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
         _s.bind(("127.0.0.1", 0))
@@ -269,7 +280,11 @@ def _cmd_launch(args: argparse.Namespace) -> None:
         # Bind to all interfaces so the tracker can announce a routable address
         # and outgoing peer connections can use the real NIC. Flask stays on
         # loopback; torrent networking uses a separate binding per the spec.
-        adapter = LibtorrentAdapter(listen_interfaces="0.0.0.0:0")
+        adapter = LibtorrentAdapter(
+            listen_interfaces="0.0.0.0:0",
+            download_limit=_dl_kbps * 1024,
+            upload_limit=_ul_kbps * 1024,
+        )
         print("Torrent engine       ready")
     except Exception as exc:  # ImportError or libtorrent init failure
         adapter = None

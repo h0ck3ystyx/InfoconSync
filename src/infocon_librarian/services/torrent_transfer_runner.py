@@ -56,6 +56,7 @@ def run_torrent_transfer(
     archive_root: Path,
     adapter: TorrentAdapter,
     broadcast: Callable[[dict[str, Any]], None],
+    stall_timeout: float = _STALL_TIMEOUT,
 ) -> None:
     """Run torrent downloads for all pending torrent items in *plan_id*.
 
@@ -195,7 +196,7 @@ def run_torrent_transfer(
                 ):
                     if stall_since is None:
                         stall_since = now
-                    elif now - stall_since >= _STALL_TIMEOUT:
+                    elif now - stall_since >= stall_timeout:
                         log.warning(
                             "Torrent %s: swarm unreachable after %.0f s — marking blocked",
                             item.destination_relpath, now - stall_since,
@@ -306,6 +307,7 @@ def start_torrent_transfer_thread(
     archive_root: Path,
     adapter: TorrentAdapter,
     broadcast: Callable[[dict[str, Any]], None],
+    stall_timeout: float = _STALL_TIMEOUT,
 ) -> threading.Thread:
     """Spawn a daemon thread to run torrent transfers for the plan."""
     t = threading.Thread(
@@ -316,6 +318,7 @@ def start_torrent_transfer_thread(
             "archive_root": archive_root,
             "adapter": adapter,
             "broadcast": broadcast,
+            "stall_timeout": stall_timeout,
         },
         daemon=True,
         name=f"torrent-xfer-{plan_id[:8]}",

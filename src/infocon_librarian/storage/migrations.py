@@ -164,6 +164,18 @@ _MIGRATIONS: list[tuple[int, str]] = [
             ON verifications (collection_key, verified_at DESC);
         """,
     ),
+    # ------------------------------------------------------------------
+    # Version 5 — user-editable settings
+    # ------------------------------------------------------------------
+    (
+        5,
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key    TEXT PRIMARY KEY,
+            value  TEXT NOT NULL
+        );
+        """,
+    ),
 ]
 
 _LATEST_VERSION = max(v for v, _ in _MIGRATIONS)

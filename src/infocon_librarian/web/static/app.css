@@ -380,6 +380,42 @@
       font-size: .85rem;
     }
 
+    /* Settings tab */
+    .settings-panel { max-width: 640px; }
+    .settings-panel .card { margin-bottom: 1rem; }
+    .settings-panel h2 { margin: 0 0 1rem; font-size: 1rem; font-weight: 600; }
+    .setting-row {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: .5rem 1rem;
+      align-items: start;
+      padding: .6rem 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .setting-row:last-child { border-bottom: none; }
+    .setting-row > label { padding-top: .35rem; font-size: .9rem; font-weight: 500; }
+    .setting-control { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+    .setting-control input[type=number] {
+      width: 90px;
+      padding: .3rem .5rem;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      font: inherit;
+      font-size: .9rem;
+    }
+    .setting-unit { font-size: .85rem; color: #555; }
+    .setting-hint {
+      width: 100%;
+      margin: .25rem 0 0;
+      font-size: .78rem;
+      color: #666;
+    }
+    .archive-root-display { font-size: .85rem; word-break: break-all; }
+    .settings-actions { display: flex; align-items: center; gap: 1rem; margin-top: 1rem; }
+    .settings-status { font-size: .85rem; }
+    .settings-ok { color: #197119; }
+    .settings-err { color: #c0392b; }
+
     /* Transfer progress */
     .xfer-progress {
       width: 100%;

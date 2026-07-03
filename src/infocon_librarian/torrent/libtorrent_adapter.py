@@ -138,6 +138,14 @@ class LibtorrentAdapter:
         self._handles: dict[str, lt.torrent_handle] = {}
         self._lock = threading.Lock()
 
+    def set_rate_limits(self, *, download_kbps: int, upload_kbps: int) -> None:
+        """Apply torrent-session rate limits (0 = unlimited). Takes effect immediately."""
+        with self._lock:
+            self._session.apply_settings({
+                "download_rate_limit": download_kbps * 1024 if download_kbps > 0 else 0,
+                "upload_rate_limit": upload_kbps * 1024 if upload_kbps > 0 else 0,
+            })
+
     # ------------------------------------------------------------------
     # Stateless inspection — no session required, no network activity
     # ------------------------------------------------------------------

@@ -431,12 +431,26 @@ def start_plan(plan_id: str) -> Response:
     if record.state not in ("draft", "preflighted"):
         return jsonify({"error": "invalid_state", "current_state": record.state}), 409
 
+    from infocon_librarian.storage.settings_repository import SettingsRepository  # noqa: PLC0415
+
     adapter = current_app.config.get("_ADAPTER")
+    settings = SettingsRepository(db)
+    stall_timeout = float(settings.get_int("torrent_stall_timeout"))
+
     repo.update_plan_state(plan_id, "running")
     _broadcast({"type": "plan_started", "plan_id": plan_id})
 
     items = repo.list_items(plan_id)
     archive_root_path = Path(root_info.canonical_path)
+    infocon_base = "https://infocon.org/"
+
+    # If stall_timeout == 0, convert all torrent items to HTTPS before starting
+    if stall_timeout == 0:
+        for it in items:
+            if it.method == "torrent" and it.status == "pending":
+                https_url = infocon_base + it.destination_relpath + "/"
+                repo.update_item_to_https(it.id, https_url)
+        items = repo.list_items(plan_id)  # reload after conversion
 
     # Spawn torrent worker for pending torrent items (requires adapter)
     has_torrent = any(it.method == "torrent" and it.status == "pending" for it in items)
@@ -448,6 +462,7 @@ def start_plan(plan_id: str) -> Response:
                 archive_root=archive_root_path,
                 adapter=adapter,
                 broadcast=_broadcast,
+                stall_timeout=stall_timeout,
             )
         else:
             # No adapter — torrent items cannot run; mark them blocked so the user knows
@@ -781,6 +796,67 @@ def get_receipt(receipt_id: str) -> Response:
         return jsonify({"error": "receipt_unreadable"}), 500
 
     return jsonify(body)
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+_ALLOWED_SETTINGS = {"torrent_stall_timeout", "torrent_download_limit", "torrent_upload_limit"}
+
+
+@api_bp.route("/settings", methods=["GET"])
+@require_session
+def get_settings() -> Response:
+    db = getattr(g, "db", None)
+    root_info = getattr(g, "archive_root_info", None)
+    if db is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    from infocon_librarian.storage.settings_repository import SettingsRepository  # noqa: PLC0415
+
+    data = SettingsRepository(db).get_all()
+    data["archive_root"] = root_info.canonical_path if root_info else None
+    return jsonify(data)
+
+
+@api_bp.route("/settings", methods=["PUT"])
+@require_session
+@require_csrf
+def put_settings() -> Response:
+    db = getattr(g, "db", None)
+    if db is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    body = request.get_json(silent=True) or {}
+    updates: dict[str, str] = {}
+    for key in _ALLOWED_SETTINGS:
+        if key in body:
+            try:
+                val = int(body[key])
+                if val < 0:
+                    return jsonify({"error": "invalid_value", "key": key}), 400
+                updates[key] = str(val)
+            except (TypeError, ValueError):
+                return jsonify({"error": "invalid_value", "key": key}), 400
+
+    from infocon_librarian.storage.settings_repository import SettingsRepository  # noqa: PLC0415
+
+    SettingsRepository(db).update_many(updates)
+
+    # Apply rate limits to the live adapter if one is running
+    adapter = current_app.config.get("_ADAPTER")
+    if adapter is not None and (
+        "torrent_download_limit" in updates or "torrent_upload_limit" in updates
+    ):
+        repo = SettingsRepository(db)
+        adapter.set_rate_limits(
+            download_kbps=repo.get_int("torrent_download_limit"),
+            upload_kbps=repo.get_int("torrent_upload_limit"),
+        )
+
+    return jsonify({"saved": list(updates.keys())}), 200
 
 
 # ---------------------------------------------------------------------------

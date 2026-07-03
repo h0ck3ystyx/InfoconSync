@@ -38,6 +38,11 @@
           Receipts
         </button>
       </li>
+      <li role="presentation">
+        <button role="tab" aria-selected="false" aria-controls="tab-settings" id="btn-settings">
+          Settings
+        </button>
+      </li>
     </ul>
 
     <!-- Collections tab -->
@@ -90,6 +95,55 @@
     <section id="tab-receipts" class="tab-panel" role="tabpanel" aria-labelledby="btn-receipts">
       <div id="receipts-list">
         <p>No receipts yet.</p>
+      </div>
+    </section>
+
+    <!-- Settings tab -->
+    <section id="tab-settings" class="tab-panel" role="tabpanel" aria-labelledby="btn-settings">
+      <div class="settings-panel">
+        <div class="card">
+          <h2>Transfer</h2>
+          <div class="setting-row">
+            <label for="setting-stall-timeout">Torrent stall timeout</label>
+            <div class="setting-control">
+              <input type="number" id="setting-stall-timeout" min="0" max="3600" step="30">
+              <span class="setting-unit">seconds</span>
+              <p class="setting-hint">How long to wait for torrent peers before offering HTTPS fallback. Set to <strong>0</strong> to skip torrent entirely and always use HTTPS.</p>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label for="setting-dl-limit">Download limit</label>
+            <div class="setting-control">
+              <input type="number" id="setting-dl-limit" min="0" step="100">
+              <span class="setting-unit">KB/s</span>
+              <p class="setting-hint">Applies to torrent transfers. 0 = unlimited.</p>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label for="setting-ul-limit">Upload limit</label>
+            <div class="setting-control">
+              <input type="number" id="setting-ul-limit" min="0" step="100">
+              <span class="setting-unit">KB/s</span>
+              <p class="setting-hint">Applies to torrent transfers. 0 = unlimited.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Archive</h2>
+          <div class="setting-row">
+            <label>Location</label>
+            <div class="setting-control">
+              <code id="setting-archive-root" class="archive-root-display">—</code>
+              <p class="setting-hint">To change, restart the app with <code>--root PATH</code>.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-actions">
+          <button class="btn btn-primary" id="btn-save-settings">Save</button>
+          <span id="settings-save-status" class="settings-status" aria-live="polite"></span>
+        </div>
       </div>
     </section>
   </main>
