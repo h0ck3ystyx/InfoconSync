@@ -34,9 +34,36 @@ log = logging.getLogger(__name__)
 _RECEIPTS_DIRNAME = "receipts"
 _MAX_CRAWL_DEPTH = 8
 
+# nginx fancyindex consumes these files server-side for directory display;
+# they don't appear in the listing HTML but are downloadable by direct URL.
+_FANCYINDEX_HIDDEN = ("HEADER.md", "FOOTER.md", "HEADER.html", "FOOTER.html")
+
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
+
+
+def _probe_hidden_files(
+    dir_url: str,
+    collection_url: str,
+    client: httpx.Client,
+) -> list[tuple[str, str]]:
+    """HEAD-probe for nginx fancyindex files that aren't listed in the directory HTML."""
+    base = dir_url.rstrip("/") + "/"
+    found = []
+    for name in _FANCYINDEX_HIDDEN:
+        url = base + name
+        if not url.startswith(collection_url):
+            continue
+        try:
+            resp = client.head(url, timeout=10)
+            if resp.status_code == 200:
+                rel = unquote(url[len(collection_url):].lstrip("/"))
+                found.append((rel, url))
+                log.debug("Found hidden fancyindex file: %s", url)
+        except Exception:
+            pass
+    return found
 
 
 def _crawl_files(
@@ -75,6 +102,8 @@ def _crawl_files(
             results.extend(
                 _crawl_files(collection_url, entry.url, client, _depth=_depth + 1)
             )
+    # Probe for nginx fancyindex files not visible in the listing
+    results.extend(_probe_hidden_files(current_url, collection_url, client))
     return results
 
 
