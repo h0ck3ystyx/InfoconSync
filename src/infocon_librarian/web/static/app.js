@@ -561,7 +561,7 @@
           tr.dataset.status = item.status;
           tr.dataset.name = (item.display_name || item.key).toLowerCase();
 
-          const canVerify = item.status === 'present_unverified' || item.status === 'changed_marker';
+          const canVerify = item.status !== 'new' && item.status !== 'unknown';
           const verifyBtn = canVerify
             ? `<button class="btn btn-sm btn-verify" data-collection-id="${escHtml(rowKey)}" ` +
               `title="Check local files exist with correct sizes per the InfoCon torrent">Verify</button>`
@@ -634,14 +634,26 @@
       });
     }
 
-    function onVerifyFinished(collectionKey, level, error, details) {
-      const tr = _verifyingRows.get(collectionKey);
-      _verifyingRows.delete(collectionKey);
+    function startAutoVerify(collectionKey) {
+      const tr = document.querySelector(`tr[data-key="${CSS.escape(collectionKey)}"]`);
+      if (tr) {
+        startVerify(collectionKey, tr);
+      } else {
+        // Collections tab not visible — fire-and-forget; SSE will announce result
+        api('POST', '/verify', { collection_id: collectionKey });
+      }
+    }
 
-      const verified = level === 'piece_verified' || level === 'manifest_verified';
-      const legacy   = level === 'has_older_version';
+    function onVerifyFinished(collectionKey, level, error, details) {
+      let tr = _verifyingRows.get(collectionKey);
+      _verifyingRows.delete(collectionKey);
+      // Auto-verify arrives without a registered row — look it up in the DOM
+      if (!tr) tr = document.querySelector(`tr[data-key="${CSS.escape(collectionKey)}"]`);
+
+      const verified  = level === 'piece_verified' || level === 'manifest_verified';
+      const legacy    = level === 'has_older_version';
       const noTorrent = level === 'no_torrent';
-      const newStatus = verified ? 'verified_current' : legacy ? 'has_older_version' : noTorrent ? tr.dataset.status : 'changed_manifest';
+      const newStatus = verified ? 'verified_current' : legacy ? 'has_older_version' : noTorrent ? (tr && tr.dataset.status) : 'changed_manifest';
 
       announce(verified   ? 'Verified: ' + collectionKey.split('/').pop()
              : legacy     ? 'Legacy version: ' + collectionKey.split('/').pop()
@@ -715,6 +727,11 @@
     // ---- Transfer SSE handlers ----
 
     function onItemStatusChanged(ev) {
+      // Auto-verify when a transfer item finishes so the Collections badge updates
+      if (ev.status === 'complete' && ev.collection_key) {
+        startAutoVerify(ev.collection_key);
+      }
+
       // Update live status/progress cells in the Transfers tab
       const statusEl = document.getElementById('item-status-' + ev.item_id);
       if (statusEl) {

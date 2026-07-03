@@ -83,6 +83,7 @@ def run_torrent_transfer(
                 "plan_id": plan_id,
                 "item_id": item.id,
                 "status": "downloading",
+                "collection_key": item.collection_key,
             })
 
             # Fetch torrent file
@@ -98,6 +99,7 @@ def run_torrent_transfer(
                     "item_id": item.id,
                     "status": "failed",
                     "error": str(exc),
+                    "collection_key": item.collection_key,
                 })
                 continue
 
@@ -124,6 +126,7 @@ def run_torrent_transfer(
                     "item_id": item.id,
                     "status": "failed",
                     "error": str(exc),
+                    "collection_key": item.collection_key,
                 })
                 continue
 
@@ -236,6 +239,7 @@ def run_torrent_transfer(
                 "item_id": item.id,
                 "status": final_state,
                 "error": last_error,
+                "collection_key": item.collection_key,
             })
 
         # If there are also HTTPS items they will update plan state themselves.

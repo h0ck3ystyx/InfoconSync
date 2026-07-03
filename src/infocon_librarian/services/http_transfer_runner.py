@@ -93,7 +93,8 @@ def _download_item(
     dest_base = archive_root / item.destination_relpath
     archive_root_resolved = archive_root.resolve()
 
-    broadcast({"type": "item_status", "plan_id": plan_id, "item_id": item.id, "status": "downloading"})
+    broadcast({"type": "item_status", "plan_id": plan_id, "item_id": item.id,
+               "status": "downloading", "collection_key": item.collection_key})
 
     file_list = _crawl_files(collection_url, collection_url, client)
     if not file_list:
@@ -184,6 +185,7 @@ def run_http_transfer(
                     "item_id": item.id,
                     "status": outcome["status"],
                     "error": outcome.get("error"),
+                    "collection_key": item.collection_key,
                 })
 
         all_ok = all(o["status"] == "complete" for o in outcomes.values())
