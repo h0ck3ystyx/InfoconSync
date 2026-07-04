@@ -24,6 +24,7 @@ from urllib.parse import unquote
 import httpx
 
 from infocon_librarian.remote.fancyindex import parse_listing
+from infocon_librarian.services.pause_control import wait_while_paused
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
 from infocon_librarian.storage.plan_repository import PlanItemRecord, PlanRepository
@@ -113,6 +114,7 @@ def _download_item(
     client: httpx.Client,
     broadcast: Callable[[dict[str, Any]], None],
     plan_id: str,
+    repo: PlanRepository,
 ) -> dict[str, Any]:
     """Download all files for one plan item. Returns outcome dict."""
     collection_url = item.url
@@ -135,6 +137,16 @@ def _download_item(
     total_downloaded = 0
 
     for rel_path, file_url in file_list:
+        # The item may have been paused between files — wait here rather
+        # than continuing to download while the user thinks it's stopped.
+        status = wait_while_paused(repo, item.id)
+        if status == "pending":
+            repo.update_item_status(item.id, "downloading")
+            broadcast({"type": "item_status", "plan_id": plan_id, "item_id": item.id,
+                       "status": "downloading", "collection_key": item.collection_key})
+        elif status != "downloading":
+            return {"status": status, "downloaded_bytes": total_downloaded}
+
         destination = (dest_base / rel_path).resolve()
 
         # Containment check — destination must stay inside archive root
@@ -201,10 +213,16 @@ def run_http_transfer(
 
         with httpx.Client(follow_redirects=True, timeout=60) as client:
             for item in https_items:
+                # The item may have been paused while still queued behind an
+                # earlier item — wait here rather than starting it anyway.
+                queued_status = wait_while_paused(repo, item.id)
+                if queued_status != "pending":
+                    continue
+
                 log.info("HTTP transfer: item %s → %s", item.id[:8], item.destination_relpath)
                 repo.update_item_status(item.id, "downloading")
 
-                outcome = _download_item(item, archive_root, client, broadcast, plan_id)
+                outcome = _download_item(item, archive_root, client, broadcast, plan_id, repo)
                 outcomes[item.id] = outcome
 
                 repo.update_item_status(item.id, outcome["status"])

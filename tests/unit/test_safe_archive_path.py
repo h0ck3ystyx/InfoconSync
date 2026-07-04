@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from infocon_librarian.domain.errors import PathEscapesRoot
-from infocon_librarian.domain.paths import CaseCollision, safe_archive_path
+from infocon_librarian.domain.paths import CaseCollision, is_valid_path_component, safe_archive_path
 
 # ---------------------------------------------------------------------------
 # F-005: .., absolute, empty, and NUL path components are all rejected
@@ -137,3 +137,31 @@ def test_f007_no_existing_paths_no_check(tmp_path: Path) -> None:
     # When existing_paths is None, collision check is skipped entirely
     result = safe_archive_path(tmp_path, ["README.TXT"], existing_paths=None)
     assert result.relative == "README.TXT"
+
+
+# ---------------------------------------------------------------------------
+# is_valid_path_component: real-world directory names with punctuation must
+# pass, while traversal/illegal-character/reserved-name components must not.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "T&A Talks",
+        "DEF CON 24",
+        "Talks, Vol. 2",
+        "Speaker's Corner",
+        "Q&A (unofficial)",
+    ],
+)
+def test_real_world_directory_names_are_valid(name: str) -> None:
+    assert is_valid_path_component(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", ".", "..", "a\x00b", "a:b", "a<b>c", "a|b", "CON", "con.txt"],
+)
+def test_unsafe_components_are_invalid(name: str) -> None:
+    assert is_valid_path_component(name) is False

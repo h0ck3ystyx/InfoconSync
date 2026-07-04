@@ -907,7 +907,7 @@
         (item.status === 'blocked'
           ? `<button class="btn btn-sm" data-action="approve-fallback" data-id="${escHtml(item.item_id)}">Use HTTPS</button>`
           : '') +
-        (item.status === 'pending'
+        (item.status === 'pending' || item.status === 'downloading'
           ? `<button class="btn btn-sm" data-action="pause" data-id="${escHtml(item.item_id)}">Pause</button>`
           : '') +
         (item.status === 'paused'

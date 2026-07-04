@@ -132,6 +132,26 @@ def _validate_parts(parts: list[str]) -> None:
             raise ValueError(f"Path component is a reserved name: {part!r}")
 
 
+def is_valid_path_component(part: str) -> bool:
+    """True if *part* is safe as a single archive path segment.
+
+    Applies the same rules as :func:`safe_archive_path` uses per-component
+    (no NUL/Windows-illegal characters, no reserved device names, no ".."),
+    so callers that need to validate a directory or collection name — without
+    real directory names like "T&A Talks" being rejected by an over-narrow
+    character allowlist — can reuse the authoritative rule set instead of
+    inventing a second one.
+    """
+    if not part or part in (".", ".."):
+        return False
+    if "\x00" in part or os.path.isabs(part):
+        return False
+    if _ILLEGAL_CHARS_RE.search(part):
+        return False
+    stem = part.upper().rsplit(".", 1)[0]
+    return stem not in _RESERVED_NAMES
+
+
 def _check_no_symlink_escape(root: Path, parts: list[str]) -> None:
     """Walk the path tree; raise PathEscapesRoot if any symlink leaves root."""
     resolved_root = root.resolve()

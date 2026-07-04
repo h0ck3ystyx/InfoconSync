@@ -3,19 +3,29 @@ from __future__ import annotations
 
 import json
 import queue
-import re
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
-# Allowed format for collection_ids submitted by the browser (section/key).
-# Prevents path traversal — no dots-dots, no slashes beyond the one separator.
-_COLLECTION_ID_RE = re.compile(r'^[A-Za-z0-9_.() -]+/[A-Za-z0-9_.() -]+$')
-
 from flask import Blueprint, Response, current_app, g, jsonify, request, stream_with_context
 
+from infocon_librarian.domain.paths import is_valid_path_component
 from infocon_librarian.web.auth import require_csrf, require_session
+
+
+def _is_safe_collection_id(cid: object) -> bool:
+    """True if *cid* is a well-formed "section/key" collection id.
+
+    Each of the two segments must be a safe single path component (see
+    :func:`is_valid_path_component`) and must not start with "." (hidden
+    directories/traversal-adjacent names are excluded defensively, even
+    though "." itself is already rejected).
+    """
+    parts = str(cid).split("/")
+    if len(parts) != 2:
+        return False
+    return all(is_valid_path_component(p) and not p.startswith(".") for p in parts)
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -251,15 +261,7 @@ def create_plan() -> Response:
     if not isinstance(collection_ids, list):
         return jsonify({"error": "invalid_field", "field": "collection_ids"}), 422
 
-    # Validate each id: must match "section/key" pattern and contain no dotdot components
-    def _safe_cid(cid: object) -> bool:
-        s = str(cid)
-        if not _COLLECTION_ID_RE.match(s):
-            return False
-        # Reject any segment that is ".." or starts with "." (hidden/traversal)
-        return all(part and part != ".." and not part.startswith(".") for part in s.split("/"))
-
-    invalid = [cid for cid in collection_ids if not _safe_cid(cid)]
+    invalid = [cid for cid in collection_ids if not _is_safe_collection_id(cid)]
     if invalid:
         return jsonify({"error": "invalid_collection_ids", "ids": invalid}), 422
 
@@ -507,8 +509,17 @@ def pause_item(item_id: str) -> Response:
     if item is None:
         return jsonify({"error": "not_found"}), 404
 
+    if item.status not in ("pending", "downloading"):
+        return jsonify({"error": "invalid_state", "current_status": item.status}), 409
+
     repo.update_item_status(item_id, "paused")
-    _broadcast({"type": "item_paused", "item_id": item_id})
+    _broadcast({
+        "type": "item_status",
+        "plan_id": item.plan_id,
+        "item_id": item_id,
+        "status": "paused",
+        "collection_key": item.collection_key,
+    })
     return jsonify({"item_id": item_id, "status": "paused"}), 200
 
 
@@ -530,8 +541,17 @@ def resume_item(item_id: str) -> Response:
     if item is None:
         return jsonify({"error": "not_found"}), 404
 
+    if item.status != "paused":
+        return jsonify({"error": "invalid_state", "current_status": item.status}), 409
+
     repo.update_item_status(item_id, "pending")
-    _broadcast({"type": "item_resumed", "item_id": item_id})
+    _broadcast({
+        "type": "item_status",
+        "plan_id": item.plan_id,
+        "item_id": item_id,
+        "status": "pending",
+        "collection_key": item.collection_key,
+    })
     return jsonify({"item_id": item_id, "status": "pending"}), 200
 
 
@@ -606,12 +626,7 @@ def create_verify() -> Response:
     if not collection_id or not isinstance(collection_id, str):
         return jsonify({"error": "missing_field", "field": "collection_id"}), 422
 
-    def _safe_cid(cid: str) -> bool:
-        if not _COLLECTION_ID_RE.match(cid):
-            return False
-        return all(part and part != ".." and not part.startswith(".") for part in cid.split("/"))
-
-    if not _safe_cid(collection_id):
+    if not _is_safe_collection_id(collection_id):
         return jsonify({"error": "invalid_collection_id"}), 422
 
     adapter = current_app.config.get("_ADAPTER")

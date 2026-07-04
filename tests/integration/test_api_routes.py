@@ -75,6 +75,68 @@ def test_u009_non_uuid_item_id_returns_404(authed_client, csrf_token):
     assert r.status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# Pause/resume state guards — a "pending"/"downloading" item can be paused,
+# a "paused" item can be resumed, and nothing else. Regression coverage for
+# the bug where Pause was offered on items that weren't running and pausing
+# didn't actually stop anything (see torrent/http transfer runners).
+# ---------------------------------------------------------------------------
+
+
+def _make_plan_item(app, status: str) -> str:
+    """Insert a plan + single item with the given status directly via the repos."""
+    from infocon_librarian.storage.plan_repository import PlanRepository
+    from infocon_librarian.storage.repositories import ArchiveRootRepository
+
+    db_path = app.config["_DB_PATH"]
+    from infocon_librarian.storage.database import open_db
+    from infocon_librarian.storage.migrations import migrate
+
+    conn = open_db(db_path)
+    migrate(conn)
+    root = ArchiveRootRepository(conn).upsert("/tmp/fake-archive-root", "fp")
+    plan = PlanRepository(conn).create_plan(root.id)
+    item = PlanRepository(conn).add_item(
+        plan.id,
+        method="https",
+        status=status,
+        destination_relpath="defcon/DEF CON 32",
+        fallback_reason=None,
+        collection_key="defcon/DEF CON 32",
+        url="https://infocon.org/defcon/DEF%20CON%2032/",
+    )
+    conn.close()
+    return item.id
+
+
+def test_pause_rejected_for_complete_item(app, authed_client, csrf_token):
+    item_id = _make_plan_item(app, "complete")
+    r = _csrf_post(authed_client, csrf_token, f"/api/items/{item_id}/pause")
+    assert r.status_code == 409
+    assert r.get_json()["error"] == "invalid_state"
+
+
+def test_pause_allowed_for_downloading_item(app, authed_client, csrf_token):
+    item_id = _make_plan_item(app, "downloading")
+    r = _csrf_post(authed_client, csrf_token, f"/api/items/{item_id}/pause")
+    assert r.status_code == 200
+    assert r.get_json()["status"] == "paused"
+
+
+def test_resume_rejected_for_non_paused_item(app, authed_client, csrf_token):
+    item_id = _make_plan_item(app, "pending")
+    r = _csrf_post(authed_client, csrf_token, f"/api/items/{item_id}/resume")
+    assert r.status_code == 409
+    assert r.get_json()["error"] == "invalid_state"
+
+
+def test_resume_allowed_for_paused_item(app, authed_client, csrf_token):
+    item_id = _make_plan_item(app, "paused")
+    r = _csrf_post(authed_client, csrf_token, f"/api/items/{item_id}/resume")
+    assert r.status_code == 200
+    assert r.get_json()["status"] == "pending"
+
+
 def test_u009_unknown_receipt_returns_404(authed_client):
     r = authed_client.get("/api/receipts/00000000-0000-0000-0000-000000000000")
     assert r.status_code == 404
@@ -111,6 +173,24 @@ def test_u010_plan_with_unknown_field_rejected(authed_client, csrf_token):
 def test_u010_check_with_unknown_field_rejected(authed_client, csrf_token):
     r = _csrf_post(authed_client, csrf_token, "/api/checks", {"unknown_key": "value"})
     assert r.status_code == 422
+
+
+def test_plan_with_real_world_collection_name_not_rejected(authed_client, csrf_token):
+    # Regression: legitimate directory names with ordinary punctuation (e.g.
+    # "T&A Talks", per tests/fixtures/listings/encoded_names.html) must not be
+    # rejected as invalid_collection_ids by an overly narrow character allowlist.
+    r = _csrf_post(
+        authed_client, csrf_token, "/api/plans", {"collection_ids": ["defcon/T&A Talks"]}
+    )
+    assert r.status_code != 422 or r.get_json().get("error") != "invalid_collection_ids"
+
+
+def test_plan_with_traversal_collection_id_rejected(authed_client, csrf_token):
+    r = _csrf_post(
+        authed_client, csrf_token, "/api/plans", {"collection_ids": ["defcon/../../etc"]}
+    )
+    assert r.status_code == 422
+    assert r.get_json()["error"] == "invalid_collection_ids"
 
 
 def test_u010_check_with_invalid_section_type_rejected(authed_client, csrf_token):

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 import httpx
 
 from infocon_librarian.domain.models import TorrentStartParams, TransferState
+from infocon_librarian.services.pause_control import wait_while_paused
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
 from infocon_librarian.storage.plan_repository import PlanRepository
@@ -77,6 +78,12 @@ def run_torrent_transfer(
         outcomes: dict[str, dict[str, Any]] = {}
 
         for item in torrent_items:
+            # The item may have been paused while still queued behind an
+            # earlier item — wait here rather than starting it anyway.
+            queued_status = wait_while_paused(repo, item.id)
+            if queued_status != "pending":
+                continue
+
             log.info("Torrent transfer: item %s → %s", item.id[:8], item.destination_relpath)
             repo.update_item_status(item.id, "downloading")
             broadcast({
@@ -142,6 +149,32 @@ def run_torrent_transfer(
             stall_since: float | None = None  # when 0-peer/no-progress stall started
 
             while time.monotonic() < deadline:
+                current_item = repo.get_item(item.id)
+                if current_item is not None and current_item.status == "paused":
+                    log.info("Torrent %s: pausing per user request", item.destination_relpath)
+                    with contextlib.suppress(Exception):
+                        adapter.pause(job_id)
+                    broadcast({
+                        "type": "item_status", "plan_id": plan_id, "item_id": item.id,
+                        "status": "paused", "collection_key": item.collection_key,
+                    })
+                    resumed_status = wait_while_paused(repo, item.id)
+                    if resumed_status != "pending":
+                        final_state = "failed"
+                        last_error = "cancelled_while_paused"
+                        break
+                    log.info("Torrent %s: resuming", item.destination_relpath)
+                    with contextlib.suppress(Exception):
+                        adapter.resume(job_id)
+                    repo.update_item_status(item.id, "downloading")
+                    broadcast({
+                        "type": "item_status", "plan_id": plan_id, "item_id": item.id,
+                        "status": "downloading", "collection_key": item.collection_key,
+                    })
+                    stall_since = None
+                    last_progress_bytes = 0
+                    continue
+
                 try:
                     progress = adapter.poll(job_id)
                 except Exception as exc:
