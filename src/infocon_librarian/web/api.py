@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import queue
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -50,6 +51,28 @@ def _broadcast(event: dict[str, Any]) -> None:
                 dead.append(key)
         for key in dead:
             del _sse_queues[key]
+
+
+def _space_estimate(items: list[Any], root_path: str | None) -> dict[str, Any]:
+    """Estimate whether the archive volume has room for a plan's remaining transfers.
+
+    ``bytes_needed`` sums every item not yet complete. It is an upper bound, not
+    an exact figure: items that are partially downloaded, or collections with
+    ``has_older_version`` content already on disk, need less than their full
+    torrent/HTTP size — we don't have per-file remaining-bytes at plan level.
+    """
+    bytes_needed = sum(i.size_bytes or 0 for i in items if i.status != "complete")
+    free_bytes = None
+    if root_path:
+        try:
+            free_bytes = shutil.disk_usage(root_path).free
+        except OSError:
+            free_bytes = None
+    return {
+        "bytes_needed": bytes_needed,
+        "free_bytes": free_bytes,
+        "sufficient": free_bytes is None or free_bytes >= bytes_needed,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +363,7 @@ def create_plan() -> Response:
             }
             for i in items
         ],
+        "space": _space_estimate(items, root_info.canonical_path if root_info else None),
     }), 201
 
 
@@ -361,6 +385,7 @@ def get_plan(plan_id: str) -> Response:
         return jsonify({"error": "not_found"}), 404
 
     items = repo.list_items(plan_id)
+    root_info = getattr(g, "archive_root_info", None)
     return jsonify({
         "plan_id": record.id,
         "state": record.state,
@@ -377,6 +402,7 @@ def get_plan(plan_id: str) -> Response:
             }
             for i in items
         ],
+        "space": _space_estimate(items, root_info.canonical_path if root_info else None),
     })
 
 

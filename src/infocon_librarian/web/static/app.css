@@ -268,6 +268,27 @@
       color: #5d4037;
     }
 
+    .space-notice {
+      background: #e8f5e9;
+      border: 1px solid #a5d6a7;
+      border-radius: 4px;
+      padding: .6rem .9rem;
+      font-size: .85rem;
+      margin-bottom: .75rem;
+      color: #2e7d32;
+    }
+    .space-notice-warn {
+      background: #ffebee;
+      border-color: #ef9a9a;
+      color: #c62828;
+    }
+
+    .selection-count {
+      font-size: .85rem;
+      color: #666;
+      align-self: center;
+    }
+
     /* ---- Receipts ---- */
     .receipt-card { margin-bottom: .5rem; }
     .receipt-row {

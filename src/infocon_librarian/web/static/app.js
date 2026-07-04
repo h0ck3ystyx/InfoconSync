@@ -220,6 +220,24 @@
       return n + ' B';
     }
 
+    function _spaceEstimateHtml(space) {
+      if (!space || space.free_bytes == null) return '';
+      const cls = space.sufficient ? 'space-notice' : 'space-notice space-notice-warn';
+      if (space.sufficient) {
+        return `<div class="${cls}">` +
+          `Estimated space needed: ${fmt(space.bytes_needed)} — ` +
+          `${fmt(space.free_bytes)} free on the archive volume.` +
+          `</div>`;
+      }
+      const shortfall = space.bytes_needed - space.free_bytes;
+      return `<div class="${cls}">` +
+        `<strong>Not enough space:</strong> this plan needs an estimated ${fmt(space.bytes_needed)}, ` +
+        `but only ${fmt(space.free_bytes)} is free on the archive volume ` +
+        `(short by ${fmt(shortfall)}). Estimate is an upper bound — partially-downloaded ` +
+        `items may need less. Free up space or remove items before starting.` +
+        `</div>`;
+    }
+
     function escHtml(s) {
       return String(s)
         .replace(/&/g, '&amp;')
@@ -610,10 +628,44 @@
       updatePlanButton();
     }
 
+    // Statuses worth transferring — excludes 'verified_current' (already current)
+    // and 'local_only' (no upstream counterpart to fetch).
+    const ACTIONABLE_STATUSES = new Set([
+      'new', 'changed_marker', 'changed_manifest', 'present_unverified', 'unknown',
+    ]);
+
     function updatePlanButton() {
-      const any = !!document.querySelector('#collections-list .row-select:checked');
-      document.getElementById('btn-plan-selected').disabled = !any;
+      const checked = [...document.querySelectorAll('#collections-list .row-select:checked')];
+      document.getElementById('btn-plan-selected').disabled = checked.length === 0;
+      const countEl = document.getElementById('selection-count');
+      countEl.textContent = checked.length
+        ? `${checked.length} selected`
+        : '';
     }
+
+    function selectActionable() {
+      const rows = [...document.querySelectorAll('#collections-list tr[data-status]')];
+      let count = 0;
+      for (const row of rows) {
+        const cb = row.querySelector('.row-select');
+        if (!cb) continue;
+        const shouldSelect = ACTIONABLE_STATUSES.has(row.dataset.status);
+        cb.checked = shouldSelect;
+        if (shouldSelect) count++;
+      }
+      // Sync each section's header checkbox (checked/indeterminate) to match.
+      document.querySelectorAll('#collections-list .section-group').forEach(details => {
+        const rowCbs = [...details.querySelectorAll('.row-select')];
+        const checkedCount = rowCbs.filter(r => r.checked).length;
+        const secCb = details.querySelector('.section-select');
+        secCb.checked = checkedCount === rowCbs.length && rowCbs.length > 0;
+        secCb.indeterminate = checkedCount > 0 && checkedCount < rowCbs.length;
+      });
+      updatePlanButton();
+      announce(count ? `Selected ${count} actionable collection(s)` : 'No actionable collections found');
+    }
+
+    document.getElementById('btn-select-actionable').addEventListener('click', selectActionable);
 
     // ---- Verify ----
     // Track in-progress verifications: collectionKey → tr element
@@ -896,6 +948,8 @@
           `</div>`;
       }
 
+      const spaceHtml = _spaceEstimateHtml(plan.space);
+
       const rows = (plan.items || []).map(item =>
         `<tr>` +
         `<td>${escHtml(item.destination_relpath)}</td>` +
@@ -920,6 +974,7 @@
       const canStart = plan.state === 'draft' || plan.state === 'preflighted';
       detail.innerHTML =
         `${privacyHtml}` +
+        `${spaceHtml}` +
         `<div class="plan-detail-header">` +
         `<h2>Plan <code>${escHtml(plan.plan_id.slice(0, 8))}…</code> ${badgeHtml(plan.state)}</h2>` +
         `<div class="plan-detail-meta">` +
