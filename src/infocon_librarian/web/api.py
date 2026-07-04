@@ -438,9 +438,19 @@ def start_plan(plan_id: str) -> Response:
         return jsonify({"error": "not_found"}), 404
 
     db = getattr(g, "db", None)
+    if db is None:
+        return jsonify({"error": "not_configured"}), 503
+
+    from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
+
+    repo = PlanRepository(db)
+    record = repo.get_plan(plan_id)
+    if record is None:
+        return jsonify({"error": "not_found"}), 404
+
     root_info = getattr(g, "archive_root_info", None)
     db_path: Path | None = current_app.config.get("_DB_PATH")
-    if db is None or root_info is None or db_path is None:
+    if root_info is None or db_path is None:
         return jsonify({"error": "not_configured"}), 503
 
     from infocon_librarian.services.http_transfer_runner import (
@@ -449,12 +459,6 @@ def start_plan(plan_id: str) -> Response:
     from infocon_librarian.services.torrent_transfer_runner import (
         start_torrent_transfer_thread,  # noqa: PLC0415,E501
     )
-    from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
-
-    repo = PlanRepository(db)
-    record = repo.get_plan(plan_id)
-    if record is None:
-        return jsonify({"error": "not_found"}), 404
 
     if record.state not in ("draft", "preflighted"):
         return jsonify({"error": "invalid_state", "current_state": record.state}), 409
