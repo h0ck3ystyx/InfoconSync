@@ -176,6 +176,31 @@ _MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    # ------------------------------------------------------------------
+    # Version 6 — receipts are permanent audit records, not lifecycle-bound
+    # children of a plan. Drop the FK to plans(id) so deleting a completed
+    # plan from the Plans tab no longer fails with a FOREIGN KEY constraint
+    # violation; plan_id is kept as a plain reference for display.
+    # ------------------------------------------------------------------
+    (
+        6,
+        """
+        PRAGMA foreign_keys=OFF;
+
+        CREATE TABLE receipts_v6 (
+            id               TEXT PRIMARY KEY,
+            plan_id          TEXT NOT NULL,
+            json_path        TEXT NOT NULL,
+            completed_at     TEXT NOT NULL
+        );
+        INSERT INTO receipts_v6 (id, plan_id, json_path, completed_at)
+            SELECT id, plan_id, json_path, completed_at FROM receipts;
+        DROP TABLE receipts;
+        ALTER TABLE receipts_v6 RENAME TO receipts;
+
+        PRAGMA foreign_keys=ON;
+        """,
+    ),
 ]
 
 _LATEST_VERSION = max(v for v, _ in _MIGRATIONS)

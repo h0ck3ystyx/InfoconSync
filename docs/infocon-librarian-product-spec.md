@@ -223,7 +223,7 @@ Each completed or failed plan produces a JSON receipt and readable summary conta
 - selected files, expected bytes, verification result, and transfer method;
 - start/end times, errors, and whether any HTTPS results remain unverified.
 
-Receipts make a drive inspectable months later and can be exported without the broader application cache.
+Receipts make a drive inspectable months later and can be exported without the broader application cache. Deleting a plan from the Plans tab (to declutter completed/failed entries) never deletes its receipt — the receipt is the permanent audit record and outlives the plan.
 
 ## 9. Torrent integration architecture
 

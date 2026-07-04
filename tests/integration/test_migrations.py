@@ -126,3 +126,71 @@ def test_f002_wal_mode_set(tmp_path: Path) -> None:
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode == "wal"
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Version 6: receipts survive deletion of their plan
+# ---------------------------------------------------------------------------
+
+
+def test_v6_deleting_a_plan_with_a_receipt_does_not_raise(tmp_path: Path) -> None:
+    """A completed plan has an auto-created receipt; deleting it from the
+    Plans tab must not fail with a FOREIGN KEY constraint violation, and the
+    receipt — the durable audit record — must survive the plan's deletion."""
+    from infocon_librarian.storage.plan_repository import PlanRepository
+
+    conn = open_db(tmp_path / "test.db")
+    migrate(conn)
+
+    root = ArchiveRootRepository(conn).upsert("/mnt/archive", "dev:1234")
+    repo = PlanRepository(conn)
+    plan = repo.create_plan(root.id)
+    receipt = repo.add_receipt(plan.id, "/fake/receipt.json")
+
+    repo.delete_plan(plan.id)
+
+    assert repo.get_plan(plan.id) is None
+    assert repo.get_receipt(receipt.id) is not None
+    conn.close()
+
+
+def test_v6_migrating_existing_receipts_preserves_rows(tmp_path: Path) -> None:
+    """A database that already has schema v5 (receipts FK'd to plans) must
+    keep its existing receipt rows intact after upgrading to v6."""
+    from infocon_librarian.storage.plan_repository import PlanRepository
+
+    db_path = tmp_path / "upgrade.db"
+    conn = open_db(db_path)
+
+    # Migrate only up to v5 to simulate a pre-existing database.
+    from infocon_librarian.storage import migrations as migrations_mod
+
+    old_migrations = [m for m in migrations_mod._MIGRATIONS if m[0] <= 5]
+    for version, sql in old_migrations:
+        conn.executescript(sql)
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (version,)
+        )
+        conn.commit()
+
+    root = ArchiveRootRepository(conn).upsert("/mnt/archive", "dev:1234")
+    repo = PlanRepository(conn)
+    plan = repo.create_plan(root.id)
+    receipt = repo.add_receipt(plan.id, "/fake/receipt.json")
+    conn.close()
+
+    # Reopen and migrate the rest of the way to latest.
+    conn2 = open_db(db_path)
+    version = migrate(conn2)
+    assert version == latest_version()
+
+    repo2 = PlanRepository(conn2)
+    found = repo2.get_receipt(receipt.id)
+    assert found is not None
+    assert found.plan_id == plan.id
+    assert found.json_path == "/fake/receipt.json"
+
+    # And the FK is now gone — deleting the plan no longer breaks.
+    repo2.delete_plan(plan.id)
+    assert repo2.get_receipt(receipt.id) is not None
+    conn2.close()

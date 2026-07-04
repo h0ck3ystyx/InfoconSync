@@ -213,6 +213,12 @@ Use SQLite in WAL mode with foreign keys enabled. Store filesystem paths relativ
 | `jobs` | `id`, `plan_item_id`, `state`, `resume_ref`, `last_error` | Resumable run state. |
 | `receipts` | `id`, `plan_id`, `json_path`, `completed_at` | Auditable result. |
 
+`receipts.plan_id` is a plain reference, not a foreign key: receipts are permanent audit
+records (§ "Receipt and recovery" in the product spec — "immutable transfer receipts")
+and must survive deletion of the plan that produced them. Migration v6 dropped the
+original `REFERENCES plans(id)` constraint after it blocked deleting completed plans
+that already had a receipt.
+
 Migrations are append-only, exercised from an empty database and the immediately preceding released schema.
 
 ## 5. Phase 0 — Torrent-engine feasibility spike
