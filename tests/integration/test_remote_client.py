@@ -4,7 +4,16 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from infocon_librarian.remote.client import RemoteClient, RemoteFetchError
+from infocon_librarian.remote.client import RemoteClient, RemoteFetchError, new_http_client
+
+
+def test_new_http_client_applies_defaults() -> None:
+    # The factory exists so every raw client that talks to infocon.org gets
+    # HTTP/2 (the server resets HTTP/1.1). Constructing it also requires the h2
+    # package to be importable via httpx[http2].
+    with new_http_client() as client:
+        assert client.follow_redirects is True
+        assert "infocon-librarian" in client.headers.get("user-agent", "")
 
 # ---------------------------------------------------------------------------
 # Fake HTTPX transport helpers

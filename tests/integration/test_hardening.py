@@ -505,6 +505,39 @@ def test_r_configure_logging_no_crash(tmp_path):
                 root_logger.removeHandler(h)
 
 
+def test_r_configure_logging_handles_non_ascii_on_legacy_console(monkeypatch):
+    # Regression: on Windows the console stream is cp1252, which cannot encode
+    # characters like U+2192. Without the UTF-8 reconfigure, logging.emit raised
+    # UnicodeEncodeError (swallowed by logging as a "--- Logging error ---") and
+    # the record was dropped. configure_logging must reconfigure the stream so
+    # non-ASCII records are written intact.
+    import io
+
+    raw = io.BytesIO()
+    fake_console = io.TextIOWrapper(
+        raw, encoding="cp1252", errors="strict", write_through=True
+    )
+    monkeypatch.setattr("infocon_librarian.structured_logging.sys.stderr", fake_console)
+
+    root_logger = logging.getLogger()
+    handlers_before = list(root_logger.handlers)
+    try:
+        configure_logging(stderr=True)
+        logging.getLogger("infocon_librarian.test_hardening").info(
+            "HTTP transfer: item %s → %s", "abc123", "cons/CyberChess"
+        )
+        fake_console.flush()
+        written = raw.getvalue().decode("utf-8", errors="replace")
+        # The full message — including the arrow — made it to the stream.
+        assert "→" in written
+        assert "cons/CyberChess" in written
+    finally:
+        for h in list(root_logger.handlers):
+            if h not in handlers_before:
+                h.close()
+                root_logger.removeHandler(h)
+
+
 def test_r_support_bundle_has_no_paths():
     summary = make_support_bundle_summary()
     assert "generated_at" in summary

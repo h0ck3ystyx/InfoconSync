@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -12,6 +13,19 @@ _USER_AGENT = "infocon-librarian/0.1 (archive steward)"
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def new_http_client(**kwargs: Any) -> httpx.Client:
+    """Create an httpx.Client configured to talk to infocon.org.
+
+    infocon.org (DEF CON infrastructure) resets plain HTTP/1.1 connections and
+    only responds over HTTP/2 (negotiated via ALPN), so ``http2=True`` is
+    mandatory for every client that talks to it. Use this factory instead of
+    ``httpx.Client(...)`` directly so no code path is left on HTTP/1.1.
+    """
+    kwargs.setdefault("follow_redirects", True)
+    kwargs.setdefault("headers", {"User-Agent": _USER_AGENT})
+    return httpx.Client(http2=True, **kwargs)
 
 
 class RemoteFetchError(LibrarianError):

@@ -23,6 +23,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from infocon_librarian.remote.client import new_http_client
 from infocon_librarian.remote.fancyindex import parse_listing
 from infocon_librarian.services.pause_control import wait_while_paused
 from infocon_librarian.storage.database import open_db
@@ -211,7 +212,7 @@ def run_http_transfer(
 
         outcomes: dict[str, dict[str, Any]] = {}
 
-        with httpx.Client(follow_redirects=True, timeout=60) as client:
+        with new_http_client(timeout=60) as client:
             for item in https_items:
                 # The item may have been paused while still queued behind an
                 # earlier item — wait here rather than starting it anyway.
@@ -219,7 +220,7 @@ def run_http_transfer(
                 if queued_status != "pending":
                     continue
 
-                log.info("HTTP transfer: item %s → %s", item.id[:8], item.destination_relpath)
+                log.info("HTTP transfer: item %s -> %s", item.id[:8], item.destination_relpath)
                 repo.update_item_status(item.id, "downloading")
 
                 outcome = _download_item(item, archive_root, client, broadcast, plan_id, repo)

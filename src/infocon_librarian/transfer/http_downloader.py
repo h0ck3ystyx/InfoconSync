@@ -20,6 +20,8 @@ from typing import Any
 
 import httpx
 
+from infocon_librarian.remote.client import new_http_client
+
 
 class DownloadState(StrEnum):
     COMPLETE = "complete"
@@ -91,7 +93,7 @@ def download(
         DownloadResult with state COMPLETE, QUARANTINED, or FAILED.
     """
     own_client = http_client is None
-    client = http_client or httpx.Client(timeout=timeout, follow_redirects=True)
+    client = http_client or new_http_client(timeout=timeout)
 
     try:
         return _download(url, destination, client=client, progress=progress)

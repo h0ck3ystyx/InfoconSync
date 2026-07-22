@@ -11,10 +11,12 @@ the standard `logging.getLogger(__name__)` API — no special log calls needed.
 """
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import logging.handlers
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +85,17 @@ def configure_logging(
     filt = RedactingFilter()
 
     if stderr:
-        handler: logging.Handler = logging.StreamHandler()
+        # On Windows the console stream defaults to a legacy code page (cp1252)
+        # that cannot encode characters like U+2192 or non-Latin collection
+        # names, which makes logging.emit raise UnicodeEncodeError. Force the
+        # stream to UTF-8 (degrading unencodable chars rather than raising) so a
+        # log call never crashes a worker thread.
+        stream = sys.stderr
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(Exception):
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+        handler: logging.Handler = logging.StreamHandler(stream)
         handler.setFormatter(fmt)
         handler.addFilter(filt)
         root.addHandler(handler)
@@ -94,6 +106,7 @@ def configure_logging(
             log_dir / "librarian.log",
             maxBytes=_MAX_LOG_BYTES,
             backupCount=_BACKUP_COUNT,
+            encoding="utf-8",
         )
         file_handler.setFormatter(fmt)
         file_handler.addFilter(filt)
