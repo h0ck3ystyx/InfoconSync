@@ -7,6 +7,7 @@ import pytest
 
 from infocon_librarian.domain.errors import PathEscapesRoot
 from infocon_librarian.domain.paths import CaseCollision, is_valid_path_component, safe_archive_path
+from tests.support import SYMLINKS_SUPPORTED
 
 # ---------------------------------------------------------------------------
 # F-005: .., absolute, empty, and NUL path components are all rejected
@@ -72,6 +73,10 @@ def test_f005_slash_in_component_split(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not SYMLINKS_SUPPORTED,
+    reason="symlink creation requires elevated privileges / Developer Mode on Windows",
+)
 def test_f006_symlink_escape_rejected(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside"
     outside.mkdir(exist_ok=True)
@@ -85,6 +90,10 @@ def test_f006_symlink_escape_rejected(tmp_path: Path) -> None:
         safe_archive_path(root, ["evil", "payload.txt"])
 
 
+@pytest.mark.skipif(
+    not SYMLINKS_SUPPORTED,
+    reason="symlink creation requires elevated privileges / Developer Mode on Windows",
+)
 def test_f006_symlink_within_root_allowed(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()

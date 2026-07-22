@@ -4,7 +4,10 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+import pytest
+
 from infocon_librarian.archive.inventory import scan, top_level_dirs
+from tests.support import SYMLINKS_SUPPORTED
 
 
 def _create_tree(root: Path, depth: int, breadth: int, files_per_dir: int = 1) -> int:
@@ -72,6 +75,10 @@ def test_d007_cancel_stops_iteration(tmp_path: Path) -> None:
     assert len(entries) < 100
 
 
+@pytest.mark.skipif(
+    not SYMLINKS_SUPPORTED,
+    reason="symlink creation requires elevated privileges / Developer Mode on Windows",
+)
 def test_d007_symlinked_dir_not_followed(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()
