@@ -36,6 +36,16 @@ log = logging.getLogger(__name__)
 _RECEIPTS_DIRNAME = "receipts"
 _MAX_CRAWL_DEPTH = 8
 
+# Emit an INFO progress line every this many files so a large collection is not
+# a silent black box between "N files" and completion.
+_PROGRESS_LOG_EVERY = 25
+
+# If this many files fail back-to-back, the shared HTTP/2 connection to
+# infocon.org is probably wedged (it resets long-lived connections). Rebuild the
+# client so the next file negotiates a fresh connection instead of retrying into
+# a dead one.
+_CONSECUTIVE_FAILURES_BEFORE_REFRESH = 5
+
 # nginx fancyindex consumes these files server-side for directory display;
 # they don't appear in the listing HTML but are downloadable by direct URL.
 _FANCYINDEX_HIDDEN = ("HEADER.md", "FOOTER.md", "HEADER.html", "FOOTER.html")
@@ -109,10 +119,41 @@ def _crawl_files(
     return results
 
 
+class _ClientHolder:
+    """Owns the shared HTTP client and can rebuild it if the connection wedges."""
+
+    def __init__(self) -> None:
+        self.client = new_http_client(timeout=60)
+
+    def refresh(self) -> None:
+        with contextlib.suppress(Exception):
+            self.client.close()
+        self.client = new_http_client(timeout=60)
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self.client.close()
+
+
+def _is_already_complete(destination: Path) -> bool:
+    """True when a finished download already sits at *destination*.
+
+    We only atomically rename to the final path on full completion, so a
+    non-empty final file with no ``.part`` sidecar is a completed download and
+    can be skipped when a plan is re-run or resumed.
+    """
+    part_path = destination.with_suffix(destination.suffix + ".part")
+    return (
+        destination.exists()
+        and not part_path.exists()
+        and destination.stat().st_size > 0
+    )
+
+
 def _download_item(
     item: PlanItemRecord,
     archive_root: Path,
-    client: httpx.Client,
+    holder: _ClientHolder,
     broadcast: Callable[[dict[str, Any]], None],
     plan_id: str,
     repo: PlanRepository,
@@ -128,16 +169,19 @@ def _download_item(
     broadcast({"type": "item_status", "plan_id": plan_id, "item_id": item.id,
                "status": "downloading", "collection_key": item.collection_key})
 
-    file_list = _crawl_files(collection_url, collection_url, client)
+    file_list = _crawl_files(collection_url, collection_url, holder.client)
     if not file_list:
         return {"status": "failed", "error": "no_files_found"}
 
-    log.info("HTTP transfer: %d files for %s", len(file_list), item.destination_relpath)
+    total = len(file_list)
+    log.info("HTTP transfer: %d files for %s", total, item.destination_relpath)
 
     failed_files: list[str] = []
     total_downloaded = 0
+    skipped = 0
+    consecutive_failures = 0
 
-    for rel_path, file_url in file_list:
+    for index, (rel_path, file_url) in enumerate(file_list, start=1):
         # The item may have been paused between files — wait here rather
         # than continuing to download while the user thinks it's stopped.
         status = wait_while_paused(repo, item.id)
@@ -156,22 +200,44 @@ def _download_item(
             failed_files.append(rel_path)
             continue
 
-        def _progress(bytes_so_far: int, total: int | None, _iid: str = item.id) -> None:
+        # Resume support: a completed file from a prior run is left in place.
+        if _is_already_complete(destination):
+            skipped += 1
+            consecutive_failures = 0
+            continue
+
+        def _progress(bytes_so_far: int, total_bytes: int | None, _iid: str = item.id) -> None:
             broadcast({
                 "type": "progress",
                 "item_id": _iid,
                 "plan_id": plan_id,
                 "downloaded_bytes": bytes_so_far,
-                "total_bytes": total,
+                "total_bytes": total_bytes,
             })
 
-        result = download(file_url, destination, http_client=client, progress=_progress)
+        result = download(file_url, destination, http_client=holder.client, progress=_progress)
         if result.state == DownloadState.COMPLETE:
             total_downloaded += result.downloaded_bytes
+            consecutive_failures = 0
             log.debug("Downloaded %s (%d B)", rel_path, result.downloaded_bytes)
         else:
             log.warning("File download failed %s: %s", file_url, result.error)
             failed_files.append(rel_path)
+            consecutive_failures += 1
+            if consecutive_failures >= _CONSECUTIVE_FAILURES_BEFORE_REFRESH:
+                log.warning(
+                    "Item %s: %d consecutive failures — refreshing HTTP connection",
+                    item.id[:8], consecutive_failures,
+                )
+                holder.refresh()
+                consecutive_failures = 0
+
+        if index % _PROGRESS_LOG_EVERY == 0 or index == total:
+            log.info(
+                "HTTP transfer %s: %d/%d files (%d skipped, %d failed, %.1f MB)",
+                item.destination_relpath, index, total, skipped,
+                len(failed_files), total_downloaded / (1024 * 1024),
+            )
 
     if failed_files:
         log.warning("Item %s: %d file(s) failed", item.id, len(failed_files))
@@ -212,7 +278,8 @@ def run_http_transfer(
 
         outcomes: dict[str, dict[str, Any]] = {}
 
-        with new_http_client(timeout=60) as client:
+        holder = _ClientHolder()
+        try:
             for item in https_items:
                 # The item may have been paused while still queued behind an
                 # earlier item — wait here rather than starting it anyway.
@@ -223,7 +290,7 @@ def run_http_transfer(
                 log.info("HTTP transfer: item %s -> %s", item.id[:8], item.destination_relpath)
                 repo.update_item_status(item.id, "downloading")
 
-                outcome = _download_item(item, archive_root, client, broadcast, plan_id, repo)
+                outcome = _download_item(item, archive_root, holder, broadcast, plan_id, repo)
                 outcomes[item.id] = outcome
 
                 repo.update_item_status(item.id, outcome["status"])
@@ -235,6 +302,8 @@ def run_http_transfer(
                     "error": outcome.get("error"),
                     "collection_key": item.collection_key,
                 })
+        finally:
+            holder.close()
 
         all_ok = all(o["status"] == "complete" for o in outcomes.values())
         plan_final = "complete" if all_ok else "failed"

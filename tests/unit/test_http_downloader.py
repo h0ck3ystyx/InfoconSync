@@ -182,32 +182,32 @@ def test_p010_etag_sent_in_if_range(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# P-011: Server returns 200 to range request → quarantine, don't append
+# P-011: Server returns 200 to a range request (no Range support) → the 200 is
+# the authoritative full file, so discard the partial and re-download fresh.
 # ---------------------------------------------------------------------------
 
 
-def test_p011_200_to_range_request_quarantined(tmp_path: Path) -> None:
+def test_p011_200_to_range_request_redownloads_fresh(tmp_path: Path) -> None:
     dest = tmp_path / "file.bin"
     part = Path(str(dest) + ".part")
     meta = Path(str(part) + ".meta")
 
-    existing = b"partial_data"
-    part.write_bytes(existing)
-    meta.write_text(f"etag=\nlast_modified=\nbytes_written={len(existing)}\n")
+    part.write_bytes(b"partial_data")
+    meta.write_text("etag=\nlast_modified=\nbytes_written=12\n")
 
-    # Server ignores Range, returns full 200
+    # Server ignores Range, returns the full file with 200.
     full_content = b"FULL_CONTENT_FROM_SERVER"
     client, _ = _fake_client([_resp200(full_content)])
 
     result = download("https://example.com/file.bin", dest, http_client=client)
 
-    assert result.state == DownloadState.QUARANTINED
-    assert result.error == "server_ignored_range"
-    # Final destination must NOT exist (no silent appending)
-    assert not dest.exists()
+    # Completes with the full body — the stale partial is overwritten, not appended.
+    assert result.state == DownloadState.COMPLETE
+    assert dest.read_bytes() == full_content
+    assert not part.exists()
 
 
-def test_p011_quarantine_file_created(tmp_path: Path) -> None:
+def test_p011_no_quarantine_on_ignored_range(tmp_path: Path) -> None:
     dest = tmp_path / "file.bin"
     part = Path(str(dest) + ".part")
     meta = Path(str(part) + ".meta")
@@ -215,11 +215,12 @@ def test_p011_quarantine_file_created(tmp_path: Path) -> None:
     part.write_bytes(b"partial")
     meta.write_text("etag=\nlast_modified=\nbytes_written=7\n")
 
-    client, _ = _fake_client([_resp200(b"full")])
+    client, _ = _fake_client([_resp200(b"the full clean body")])
     download("https://example.com/file.bin", dest, http_client=client)
 
-    quarantine = Path(str(part) + ".quarantine")
-    assert quarantine.exists()
+    # No quarantine sidecar, and the resume metadata is cleaned up.
+    assert not Path(str(part) + ".quarantine").exists()
+    assert not meta.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +276,120 @@ def test_p012_network_error_returns_failed(tmp_path: Path) -> None:
             raise httpx.ConnectError("connection refused")
 
     client = httpx.Client(transport=_ErrorTransport())
-    result = download("https://example.com/file.bin", dest, http_client=client)
+    result = download(
+        "https://example.com/file.bin", dest, http_client=client, retry_delay_base=0.0
+    )
 
     assert result.state == DownloadState.FAILED
     assert result.error is not None
     assert not dest.exists()
+
+
+# ---------------------------------------------------------------------------
+# Retry / backoff — transient failures are retried, permanent ones are not
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedTransport(httpx.BaseTransport):
+    """Raises/returns from a script, one entry per request."""
+
+    def __init__(self, script: list[object]) -> None:
+        self._script = list(script)
+        self._i = 0
+        self.calls = 0
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
+        item = self._script[min(self._i, len(self._script) - 1)]
+        self._i += 1
+        if isinstance(item, Exception):
+            raise item
+        assert isinstance(item, httpx.Response)
+        return item
+
+
+def test_retry_recovers_after_transient_network_error(tmp_path: Path) -> None:
+    dest = tmp_path / "file.bin"
+    content = b"recovered content"
+    transport = _ScriptedTransport([
+        httpx.ConnectError("reset"),
+        httpx.ConnectError("reset"),
+        _resp200(content),
+    ])
+    client = httpx.Client(transport=transport)
+
+    result = download(
+        "https://example.com/file.bin", dest, http_client=client,
+        max_retries=3, retry_delay_base=0.0,
+    )
+
+    assert result.state == DownloadState.COMPLETE
+    assert dest.read_bytes() == content
+    assert transport.calls == 3  # two failures + one success
+
+
+def test_retry_gives_up_after_max_retries(tmp_path: Path) -> None:
+    dest = tmp_path / "file.bin"
+    transport = _ScriptedTransport([httpx.ConnectError("reset")])
+    client = httpx.Client(transport=transport)
+
+    result = download(
+        "https://example.com/file.bin", dest, http_client=client,
+        max_retries=3, retry_delay_base=0.0,
+    )
+
+    assert result.state == DownloadState.FAILED
+    assert transport.calls == 3  # exactly max_retries attempts
+
+
+def test_permanent_http_error_is_not_retried(tmp_path: Path) -> None:
+    dest = tmp_path / "file.bin"
+    transport = _ScriptedTransport([httpx.Response(404, content=b"nope")])
+    client = httpx.Client(transport=transport)
+
+    result = download(
+        "https://example.com/file.bin", dest, http_client=client,
+        max_retries=3, retry_delay_base=0.0,
+    )
+
+    assert result.state == DownloadState.FAILED
+    assert result.error == "http_404"
+    assert transport.calls == 1  # 404 is permanent — no retry
+
+
+def test_transient_5xx_is_retried(tmp_path: Path) -> None:
+    dest = tmp_path / "file.bin"
+    content = b"ok now"
+    transport = _ScriptedTransport([
+        httpx.Response(503, content=b"busy"),
+        _resp200(content),
+    ])
+    client = httpx.Client(transport=transport)
+
+    result = download(
+        "https://example.com/file.bin", dest, http_client=client,
+        max_retries=3, retry_delay_base=0.0,
+    )
+
+    assert result.state == DownloadState.COMPLETE
+    assert transport.calls == 2
+
+
+def test_resume_truncates_untracked_tail_before_appending(tmp_path: Path) -> None:
+    """A .part longer than its sidecar records (crash between chunk write and
+    meta write) must be truncated to the recorded length, not appended to."""
+    dest = tmp_path / "file.bin"
+    part = Path(str(dest) + ".part")
+    meta = Path(str(part) + ".meta")
+
+    # Sidecar records 5 bytes, but the .part has an extra un-recorded chunk.
+    part.write_bytes(b"AAAAA" + b"GARBAGE")
+    meta.write_text("etag=\nlast_modified=\nbytes_written=5\n")
+
+    tail = b"BBBBB"
+    client, transport = _fake_client([_resp206(tail, start=5, total=10)])
+
+    result = download("https://example.com/file.bin", dest, http_client=client)
+
+    assert result.state == DownloadState.COMPLETE
+    assert dest.read_bytes() == b"AAAAA" + tail  # garbage tail dropped
