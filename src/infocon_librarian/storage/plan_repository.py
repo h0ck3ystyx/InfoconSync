@@ -78,6 +78,51 @@ class PlanRepository:
         )
         self._conn.commit()
 
+    def requeue_incomplete_items(self, plan_id: str) -> int:
+        """Flip a plan's failed/downloading items back to ``pending`` for a retry.
+
+        Completed items keep their state (the downloader skips them on re-run),
+        and explicit ``paused``/``blocked`` items are left alone. Returns the
+        number of items requeued. Safe to call on an already-pending plan — it
+        is then a no-op.
+        """
+        cur = self._conn.execute(
+            """UPDATE plan_items SET status = 'pending'
+               WHERE plan_id = ? AND status IN ('failed', 'downloading')""",
+            (plan_id,),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def reset_orphaned_running_plans(self) -> int:
+        """Recover plans left mid-transfer by a crash or kill.
+
+        A plan is only ever in state ``running`` while a worker thread owns it.
+        At process startup no such threads exist, so any ``running`` plan is
+        orphaned: its worker died without finishing. Roll it back to
+        ``preflighted`` and flip its in-flight (``downloading``) items back to
+        ``pending`` so the plan can be restarted from the UI. Completed files are
+        skipped on re-run, so this resumes rather than restarts. Terminal item
+        states (complete/failed) and explicit ``paused`` items are left untouched.
+
+        Returns the number of plans reset.
+        """
+        running = self._conn.execute(
+            "SELECT id FROM plans WHERE state = 'running'"
+        ).fetchall()
+        if not running:
+            return 0
+        self._conn.execute(
+            """UPDATE plan_items SET status = 'pending'
+               WHERE status = 'downloading'
+                 AND plan_id IN (SELECT id FROM plans WHERE state = 'running')"""
+        )
+        self._conn.execute(
+            "UPDATE plans SET state = 'preflighted' WHERE state = 'running'"
+        )
+        self._conn.commit()
+        return len(running)
+
     def delete_plan(self, plan_id: str) -> None:
         self._conn.execute("DELETE FROM plan_items WHERE plan_id = ?", (plan_id,))
         self._conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))

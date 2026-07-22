@@ -4,14 +4,19 @@ Rules:
 - URL and destination come exclusively from a plan item (no browser input).
 - Writes to a `.part` sidecar; atomically renames on clean completion.
 - Issues Range only for an existing sidecar whose ETag/Last-Modified still match.
-- If the server ignores Range (returns 200), quarantines the partial and
-  returns QUARANTINED — no silent appending.
+- If the server ignores Range (returns 200), the full 200 body is authoritative:
+  discard the stale partial and download it fresh (infocon.org does not support
+  Range, so resume is impossible — a clean re-download is the correct recovery).
+- Only a malformed 206 (Content-Range that doesn't match the request) is
+  quarantined — that is genuinely untrustworthy, not a plain no-range server.
 - Output is always DOWNLOADED_UNVERIFIED unless a higher-level caller verifies.
 - Progress is reported via a callback (bytes_so_far, total_bytes | None).
 """
 from __future__ import annotations
 
+import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -22,11 +27,18 @@ import httpx
 
 from infocon_librarian.remote.client import new_http_client
 
+log = logging.getLogger(__name__)
+
 
 class DownloadState(StrEnum):
     COMPLETE = "complete"
     QUARANTINED = "quarantined"
     FAILED = "failed"
+
+
+# HTTP statuses that warrant a retry (transient server / rate-limit conditions).
+# 4xx other than 429 are permanent and must not be retried.
+_TRANSIENT_HTTP = frozenset({429, 500, 502, 503, 504})
 
 
 @dataclass(frozen=True)
@@ -42,6 +54,7 @@ ProgressCallback = Callable[[int, int | None], None]
 
 _SIDECAR_META_SUFFIX = ".part.meta"
 _CHUNK = 64 * 1024  # 64 KiB
+_META_FLUSH_INTERVAL = 4 * 1024 * 1024  # persist resume offset every 4 MiB
 
 
 @dataclass
@@ -79,6 +92,8 @@ def download(
     http_client: httpx.Client | None = None,
     progress: ProgressCallback | None = None,
     timeout: float = 60.0,
+    max_retries: int = 5,
+    retry_delay_base: float = 1.0,
 ) -> DownloadResult:
     """Download *url* to *destination*, resuming if a .part sidecar exists.
 
@@ -88,6 +103,12 @@ def download(
         http_client: Optional shared httpx.Client; a transient one is created if None.
         progress: Called with (bytes_so_far, total_bytes_or_None) periodically.
         timeout: Per-request timeout in seconds.
+        max_retries: Total attempts for transient failures (network resets, 5xx,
+            429). A stalled or reset stream is retried after backoff; the .part
+            sidecar means each retry resumes from where the last one stopped
+            rather than starting over. Non-transient failures (404, quarantine)
+            return immediately.
+        retry_delay_base: Base seconds for exponential backoff between attempts.
 
     Returns:
         DownloadResult with state COMPLETE, QUARANTINED, or FAILED.
@@ -96,10 +117,37 @@ def download(
     client = http_client or new_http_client(timeout=timeout)
 
     try:
-        return _download(url, destination, client=client, progress=progress)
+        result = _download(url, destination, client=client, progress=progress)
+        attempt = 1
+        while (
+            result.state == DownloadState.FAILED
+            and _is_transient(result.error)
+            and attempt < max_retries
+        ):
+            delay = retry_delay_base * (2 ** (attempt - 1))
+            log.info(
+                "Retrying %s (attempt %d/%d) after %s: sleeping %.1fs",
+                url, attempt + 1, max_retries, result.error, delay,
+            )
+            time.sleep(delay)
+            attempt += 1
+            result = _download(url, destination, client=client, progress=progress)
+        return result
     finally:
         if own_client:
             client.close()
+
+
+def _is_transient(error: str | None) -> bool:
+    """True when a FAILED result is worth retrying (network reset/timeout, 5xx, 429)."""
+    if not error:
+        return False
+    if error.startswith("network_error"):
+        return True
+    m = re.match(r"http_(\d+)$", error)
+    if m:
+        return int(m.group(1)) in _TRANSIENT_HTTP
+    return False
 
 
 def _download(
@@ -131,15 +179,13 @@ def _download(
     try:
         with client.stream("GET", url, headers=headers) as resp:
             if resp.status_code == 200 and sidecar is not None and sidecar.bytes_written > 0:
-                # Server ignored Range → quarantine partial
-                _quarantine(part_path, meta_path)
-                return DownloadResult(
-                    state=DownloadState.QUARANTINED,
-                    destination=None,
-                    downloaded_bytes=sidecar.bytes_written,
-                    total_bytes=_parse_content_length(resp),
-                    error="server_ignored_range",
-                )
+                # We asked to resume, but the server sent the whole file. The 200
+                # body is complete and authoritative, so drop the stale partial
+                # and download fresh rather than failing. (infocon.org does not
+                # honour Range — every reset would otherwise be unrecoverable.)
+                log.info("Server ignored Range for %s — re-downloading from scratch", url)
+                meta_path.unlink(missing_ok=True)
+                sidecar = None  # forces a fresh, from-zero write below
 
             if resp.status_code == 206:
                 # Verify Content-Range matches what we asked for
@@ -178,17 +224,32 @@ def _download(
             bytes_so_far = sidecar.bytes_written if (sidecar and append) else 0
 
             destination.parent.mkdir(parents=True, exist_ok=True)
+            if append and part_path.exists() and part_path.stat().st_size > bytes_so_far:
+                # A prior attempt may have written a chunk to .part but crashed
+                # before recording it in the sidecar. Trust the sidecar (which the
+                # Range request resumes from) and drop any un-recorded tail so we
+                # never append a duplicate chunk on top of it.
+                with open(part_path, "r+b") as _fh:
+                    _fh.truncate(bytes_so_far)
             mode = "ab" if append else "wb"
+            last_meta_flush = bytes_so_far
             with open(part_path, mode) as fh:
                 for chunk in resp.iter_bytes(chunk_size=_CHUNK):
                     fh.write(chunk)
                     bytes_so_far += len(chunk)
-                    current_meta = _Sidecar(
-                        etag=etag,
-                        last_modified=last_modified,
-                        bytes_written=bytes_so_far,
-                    )
-                    meta_path.write_text(current_meta.to_lines())
+                    # Flush the resume sidecar periodically rather than every 64 KB
+                    # chunk — a per-chunk write is thousands of tiny syncs on a big
+                    # file. On a crash the .part may run ahead of the recorded
+                    # offset; the truncate-on-resume above trims that tail, so the
+                    # cost of a coarse flush is only re-fetching up to one interval.
+                    if bytes_so_far - last_meta_flush >= _META_FLUSH_INTERVAL:
+                        fh.flush()
+                        meta_path.write_text(_Sidecar(
+                            etag=etag,
+                            last_modified=last_modified,
+                            bytes_written=bytes_so_far,
+                        ).to_lines())
+                        last_meta_flush = bytes_so_far
                     if progress:
                         progress(bytes_so_far, total)
 

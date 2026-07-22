@@ -262,13 +262,19 @@ def _cmd_launch(args: argparse.Namespace) -> None:
     # Read persisted settings before initialising the adapter
     from infocon_librarian.storage.database import open_db as _open_db  # noqa: PLC0415
     from infocon_librarian.storage.migrations import migrate as _migrate  # noqa: PLC0415
+    from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
     from infocon_librarian.storage.settings_repository import SettingsRepository  # noqa: PLC0415
     _sdb = _open_db(cfg.db_path)
     _migrate(_sdb)
     _sr = SettingsRepository(_sdb)
     _dl_kbps = _sr.get_int("torrent_download_limit")
     _ul_kbps = _sr.get_int("torrent_upload_limit")
+    # A running plan at startup was orphaned by a prior crash/kill — no worker
+    # survives a restart. Roll it back so it can be resumed from the UI.
+    _orphaned = PlanRepository(_sdb).reset_orphaned_running_plans()
     _sdb.close()
+    if _orphaned:
+        print(f"Recovered {_orphaned} interrupted plan(s)  restart from the Transfers tab")
 
     # Claim a free loopback port before the server starts
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:

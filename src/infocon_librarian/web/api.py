@@ -460,7 +460,9 @@ def start_plan(plan_id: str) -> Response:
         start_torrent_transfer_thread,  # noqa: PLC0415,E501
     )
 
-    if record.state not in ("draft", "preflighted"):
+    # "failed" is restartable: a retry re-crawls, skips completed files, and
+    # re-attempts the ones that failed (e.g. after a server reset).
+    if record.state not in ("draft", "preflighted", "failed"):
         return jsonify({"error": "invalid_state", "current_state": record.state}), 409
 
     from infocon_librarian.storage.settings_repository import SettingsRepository  # noqa: PLC0415
@@ -469,6 +471,8 @@ def start_plan(plan_id: str) -> Response:
     settings = SettingsRepository(db)
     stall_timeout = float(settings.get_int("torrent_stall_timeout"))
 
+    # Requeue anything left incomplete by a prior attempt so a retry picks it up.
+    repo.requeue_incomplete_items(plan_id)
     repo.update_plan_state(plan_id, "running")
     _broadcast({"type": "plan_started", "plan_id": plan_id})
 
