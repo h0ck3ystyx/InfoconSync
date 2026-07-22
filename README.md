@@ -2,7 +2,7 @@
 
 A local-first desktop application for maintaining an existing [InfoCon](https://infocon.org) archive. It detects what changed upstream, builds a reviewable transfer plan, executes it using BitTorrent as the primary mechanism, and produces auditable receipts.
 
-**macOS only** in the current release. Linux and Windows are supported after their packaging smoke tests pass.
+**macOS** is the primary release target. **Windows 10/11** runs from source (see [Install (Windows)](#install-windows)); native packaging lands after the Windows packaging smoke tests pass. Linux is supported after its packaging smoke tests pass.
 
 ---
 
@@ -18,11 +18,12 @@ A local-first desktop application for maintaining an existing [InfoCon](https://
 
 ## Requirements
 
-- macOS 13 (Ventura) or later
-- [Homebrew](https://brew.sh)
+- macOS 13 (Ventura) or later, or Windows 10/11
 - Python 3.11 or 3.12
+- macOS only: [Homebrew](https://brew.sh)
+- Windows only: [Microsoft Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) — required by the `libtorrent` and `greenlet` native extensions
 
-## Install
+## Install (macOS)
 
 ```bash
 brew install libtorrent-rasterbar python@3.12
@@ -37,6 +38,26 @@ cd InfoconSync
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -e .
 ```
+
+## Install (Windows)
+
+On Windows, `libtorrent` is installed as a normal PyPI wheel (there is no
+Homebrew), so a plain venv works — no `--system-site-packages`.
+
+```powershell
+# 1. Install the VC++ redistributable once (needs admin — accept the UAC prompt):
+winget install --id Microsoft.VCRedist.2015+.x64 -e
+
+# 2. From the repo root:
+py -m venv .venv
+.\.venv\Scripts\pip install -e ".[dev]"
+.\.venv\Scripts\pip install libtorrent
+```
+
+Without the VC++ redistributable, `import libtorrent` (and Playwright's
+`greenlet`) fail with `ImportError: DLL load failed`. The app still launches
+without libtorrent — it reports `Torrent engine unavailable` and disables
+torrent transfers — but verification and torrent downloads need it.
 
 ## Usage
 
