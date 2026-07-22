@@ -47,6 +47,11 @@ class RemoteClient:
             timeout=timeout,
             transport=transport,
             follow_redirects=True,
+            # infocon.org (DEF CON infra) resets plain HTTP/1.1 connections and
+            # only responds over HTTP/2. httpx negotiates h2 via ALPN and falls
+            # back to HTTP/1.1 for servers that don't offer it. Ignored when a
+            # custom transport is supplied (tests).
+            http2=True,
         )
 
     def fetch(
@@ -94,7 +99,12 @@ class RemoteClient:
                 if attempt < self._max_retries - 1:
                     time.sleep(self._retry_delay_base * (2**attempt))
 
-            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            except httpx.TransportError as exc:
+                # Any transport-level failure is transient: connection resets and
+                # disconnects (RemoteProtocolError), read/write errors, connect
+                # errors, and timeouts. Retry with backoff, then surface as a
+                # RemoteFetchError below so callers log one calm line instead of
+                # an unhandled traceback.
                 last_err = exc
                 if attempt < self._max_retries - 1:
                     time.sleep(self._retry_delay_base * (2**attempt))
