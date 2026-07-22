@@ -4,7 +4,16 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from infocon_librarian.remote.client import RemoteClient, RemoteFetchError
+from infocon_librarian.remote.client import RemoteClient, RemoteFetchError, new_http_client
+
+
+def test_new_http_client_applies_defaults() -> None:
+    # The factory exists so every raw client that talks to infocon.org gets
+    # HTTP/2 (the server resets HTTP/1.1). Constructing it also requires the h2
+    # package to be importable via httpx[http2].
+    with new_http_client() as client:
+        assert client.follow_redirects is True
+        assert "infocon-librarian" in client.headers.get("user-agent", "")
 
 # ---------------------------------------------------------------------------
 # Fake HTTPX transport helpers
@@ -99,6 +108,47 @@ def test_d005_connection_error_exhausted_raises() -> None:
     )
     with pytest.raises(RemoteFetchError):
         client.fetch("http://example.com/")
+
+
+def test_d005_remote_protocol_error_is_retried() -> None:
+    # A connection reset surfaces as httpx.RemoteProtocolError ("Server
+    # disconnected without sending a response"). It must be retried, not escape
+    # raw — that is the failure hit against infocon.org over HTTP/1.1.
+    class _ResetOnce(httpx.BaseTransport):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.RemoteProtocolError(
+                    "Server disconnected without sending a response.",
+                    request=request,
+                )
+            return _response(200, b"recovered")
+
+    transport = _ResetOnce()
+    client = RemoteClient(transport=transport, max_retries=2, retry_delay_base=0.0)
+    result = client.fetch("http://example.com/cons/")
+    assert result.status_code == 200
+    assert transport.calls == 2
+
+
+def test_d005_remote_protocol_error_exhausted_raises_fetch_error() -> None:
+    class _AlwaysReset(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response.",
+                request=request,
+            )
+
+    client = RemoteClient(
+        transport=_AlwaysReset(), max_retries=3, retry_delay_base=0.0
+    )
+    # Wrapped, not a raw httpx error — check_runner catches RemoteFetchError and
+    # logs a single warning instead of failing the whole check with a traceback.
+    with pytest.raises(RemoteFetchError):
+        client.fetch("http://example.com/cons/")
 
 
 def test_d005_404_not_retried() -> None:

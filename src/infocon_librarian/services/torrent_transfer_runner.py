@@ -24,9 +24,8 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 if TYPE_CHECKING:
     from infocon_librarian.torrent.adapter import TorrentAdapter
 
-import httpx
-
 from infocon_librarian.domain.models import TorrentStartParams, TransferState
+from infocon_librarian.remote.client import new_http_client
 from infocon_librarian.services.pause_control import wait_while_paused
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
@@ -44,7 +43,7 @@ def _fetch_torrent_bytes(torrent_url: str) -> bytes:
     """Fetch .torrent file bytes, normalising any double-encoded percent sequences."""
     _parts = urlsplit(torrent_url)
     encoded_url = urlunsplit(_parts._replace(path=quote(unquote(_parts.path), safe="/")))
-    with httpx.Client(follow_redirects=True, timeout=60) as client:
+    with new_http_client(timeout=60) as client:
         resp = client.get(encoded_url)
         resp.raise_for_status()
         return resp.content

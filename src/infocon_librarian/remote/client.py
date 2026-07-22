@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -12,6 +13,19 @@ _USER_AGENT = "infocon-librarian/0.1 (archive steward)"
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def new_http_client(**kwargs: Any) -> httpx.Client:
+    """Create an httpx.Client configured to talk to infocon.org.
+
+    infocon.org (DEF CON infrastructure) resets plain HTTP/1.1 connections and
+    only responds over HTTP/2 (negotiated via ALPN), so ``http2=True`` is
+    mandatory for every client that talks to it. Use this factory instead of
+    ``httpx.Client(...)`` directly so no code path is left on HTTP/1.1.
+    """
+    kwargs.setdefault("follow_redirects", True)
+    kwargs.setdefault("headers", {"User-Agent": _USER_AGENT})
+    return httpx.Client(http2=True, **kwargs)
 
 
 class RemoteFetchError(LibrarianError):
@@ -47,6 +61,11 @@ class RemoteClient:
             timeout=timeout,
             transport=transport,
             follow_redirects=True,
+            # infocon.org (DEF CON infra) resets plain HTTP/1.1 connections and
+            # only responds over HTTP/2. httpx negotiates h2 via ALPN and falls
+            # back to HTTP/1.1 for servers that don't offer it. Ignored when a
+            # custom transport is supplied (tests).
+            http2=True,
         )
 
     def fetch(
@@ -94,7 +113,12 @@ class RemoteClient:
                 if attempt < self._max_retries - 1:
                     time.sleep(self._retry_delay_base * (2**attempt))
 
-            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            except httpx.TransportError as exc:
+                # Any transport-level failure is transient: connection resets and
+                # disconnects (RemoteProtocolError), read/write errors, connect
+                # errors, and timeouts. Retry with backoff, then surface as a
+                # RemoteFetchError below so callers log one calm line instead of
+                # an unhandled traceback.
                 last_err = exc
                 if attempt < self._max_retries - 1:
                     time.sleep(self._retry_delay_base * (2**attempt))

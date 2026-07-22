@@ -9,7 +9,9 @@ requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = [
     "flask>=3.0",
-    "httpx>=0.27",
+    # httpx[http2] pulls in the h2 package: infocon.org's front-end resets
+    # plain HTTP/1.1 connections and requires HTTP/2 (negotiated via ALPN).
+    "httpx[http2]>=0.27",
     "platformdirs>=4.0",
     # libtorrent is installed via brew (libtorrent-rasterbar) and accessed
     # through --system-site-packages in the venv. It is not on PyPI for 3.14.
