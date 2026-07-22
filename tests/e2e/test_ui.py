@@ -115,22 +115,24 @@ def test_u002_tab_panel_accessible_by_keyboard(page_authed: Page):
 
 
 def test_u003_status_badge_has_text_content(page_authed: Page):
-    # Inject a fake collection row to verify badge rendering
+    # Inject a fake collection row to verify badge rendering. The UI builds
+    # per-section tables dynamically inside #collections-container, so append
+    # a minimal row table there rather than assuming a static table exists.
     page_authed.evaluate("""() => {
-        const tbody = document.getElementById('collections-body');
-        if (!tbody) return;
-        const tr = document.createElement('tr');
-        tr.dataset.key = 'test/test';
-        tr.innerHTML = `
-          <td><input type="checkbox" class="row-select" data-key="test/test"
-            aria-label="Select test"></td>
-          <td>test collection</td>
-          <td><span class="badge badge-new">New</span></td>
-          <td>1 MB</td>
-          <td></td>`;
-        tbody.appendChild(tr);
-        document.getElementById('collections-empty').hidden = true;
-        document.getElementById('collections-table').hidden = false;
+        const container = document.getElementById('collections-container');
+        const empty = document.getElementById('collections-empty');
+        if (empty) empty.hidden = true;
+        const table = document.createElement('table');
+        table.innerHTML = `
+          <tbody><tr data-key="test/test">
+            <td><input type="checkbox" class="row-select" data-key="test/test"
+              aria-label="Select test"></td>
+            <td>test collection</td>
+            <td><span class="badge badge-new">New</span></td>
+            <td>1 MB</td>
+            <td></td>
+          </tr></tbody>`;
+        container.appendChild(table);
     }""")
     badge = page_authed.locator(".badge-new").first
     expect(badge).to_have_text("New")
@@ -326,5 +328,5 @@ def test_u011_check_button_reachable_at_narrow_width(live_server, page: Page):
     page.set_viewport_size({"width": 360, "height": 640})
     page.goto(live_server["make_bootstrap_url"]())
     page.wait_for_url(live_server["base"] + "/")
-    btn = page.get_by_role("button", name="Check upstream")
+    btn = page.get_by_role("button", name="Check infocon.org")
     expect(btn).to_be_visible()

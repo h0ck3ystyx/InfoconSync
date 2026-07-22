@@ -87,7 +87,10 @@ def test_f004_non_nested_root_accepted(tmp_path: Path) -> None:
     assert info.canonical_path == str(archive.resolve())
 
 
-@pytest.mark.skipif(os.getuid() == 0, reason="root can write to read-only dirs")
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "getuid") and os.getuid() == 0),
+    reason="POSIX read-only dir semantics; Windows chmod and root both allow writes",
+)
 def test_f004_read_only_root_rejected(tmp_path: Path) -> None:
     root = tmp_path / "readonly_archive"
     root.mkdir()
