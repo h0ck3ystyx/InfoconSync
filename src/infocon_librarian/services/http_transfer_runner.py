@@ -15,8 +15,10 @@ import datetime
 import json
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -29,6 +31,7 @@ from infocon_librarian.services.pause_control import wait_while_paused
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
 from infocon_librarian.storage.plan_repository import PlanItemRecord, PlanRepository
+from infocon_librarian.storage.settings_repository import SettingsRepository
 from infocon_librarian.transfer.http_downloader import DownloadState, download
 
 log = logging.getLogger(__name__)
@@ -40,11 +43,19 @@ _MAX_CRAWL_DEPTH = 8
 # a silent black box between "N files" and completion.
 _PROGRESS_LOG_EVERY = 25
 
-# If this many files fail back-to-back, the shared HTTP/2 connection to
-# infocon.org is probably wedged (it resets long-lived connections). Rebuild the
-# client so the next file negotiates a fresh connection instead of retrying into
-# a dead one.
+# If a single worker sees this many files fail back-to-back, its HTTP/2
+# connection to infocon.org is probably wedged (the server resets long-lived
+# connections). Rebuild that worker's client so the next file negotiates a fresh
+# connection instead of retrying into a dead one.
 _CONSECUTIVE_FAILURES_BEFORE_REFRESH = 5
+
+# Upper bound on concurrent file downloads per collection. infocon.org is
+# volunteer infrastructure; this caps how hard any one plan can hit it even if
+# the stored setting is raised beyond it.
+HTTP_CONCURRENCY_MAX = 8
+
+# How often a worker re-checks a paused item before resuming its file.
+_PAUSE_POLL_INTERVAL = 2.0
 
 # nginx fancyindex consumes these files server-side for directory display;
 # they don't appear in the listing HTML but are downloadable by direct URL.
@@ -53,6 +64,12 @@ _FANCYINDEX_HIDDEN = ("HEADER.md", "FOOTER.md", "HEADER.html", "FOOTER.html")
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
+
+
+def _resolve_concurrency(conn: Any) -> int:
+    """Read the http_concurrency setting and clamp it to a safe range."""
+    value = SettingsRepository(conn).get_int("http_concurrency")
+    return max(1, min(value, HTTP_CONCURRENCY_MAX))
 
 
 def _probe_hidden_files(
@@ -135,6 +152,61 @@ class _ClientHolder:
             self.client.close()
 
 
+class _WorkerClients:
+    """One HTTP/2 client per worker thread, with independent wedge-recovery.
+
+    An httpx client is safe to reuse across the many files a single worker
+    thread downloads, but sharing one client across *all* workers would mean a
+    reset connection (infocon.org drops long-lived ones) stalls every worker at
+    once. Giving each thread its own client lets a wedged worker rebuild its own
+    connection without disturbing the others. A per-thread consecutive-failure
+    count drives that refresh.
+    """
+
+    def __init__(self, factory: Callable[[], httpx.Client] | None = None) -> None:
+        self._factory = factory or (lambda: new_http_client(timeout=60))
+        self._tl = threading.local()
+        self._lock = threading.Lock()
+        self._all: list[httpx.Client] = []
+
+    def get(self) -> httpx.Client:
+        client = getattr(self._tl, "client", None)
+        if client is None:
+            client = self._factory()
+            self._tl.client = client
+            with self._lock:
+                self._all.append(client)
+        return client
+
+    def note_success(self) -> None:
+        self._tl.failures = 0
+
+    def note_failure(self) -> int:
+        count = getattr(self._tl, "failures", 0) + 1
+        self._tl.failures = count
+        return count
+
+    def refresh(self) -> None:
+        """Rebuild the calling thread's client and reset its failure count."""
+        old = getattr(self._tl, "client", None)
+        if old is not None:
+            with contextlib.suppress(Exception):
+                old.close()
+        client = self._factory()
+        self._tl.client = client
+        self._tl.failures = 0
+        with self._lock:
+            self._all.append(client)
+
+    def close_all(self) -> None:
+        with self._lock:
+            clients = list(self._all)
+            self._all.clear()
+        for client in clients:
+            with contextlib.suppress(Exception):
+                client.close()
+
+
 def _is_already_complete(destination: Path) -> bool:
     """True when a finished download already sits at *destination*.
 
@@ -157,8 +229,18 @@ def _download_item(
     broadcast: Callable[[dict[str, Any]], None],
     plan_id: str,
     repo: PlanRepository,
+    *,
+    concurrency: int,
+    client_factory: Callable[[], httpx.Client] | None = None,
 ) -> dict[str, Any]:
-    """Download all files for one plan item. Returns outcome dict."""
+    """Download all files for one plan item. Returns outcome dict.
+
+    Files are fetched by a bounded pool of *concurrency* workers. The crawl and
+    all DB access stay serialised; only the file transfers run in parallel.
+
+    *client_factory* builds each worker's httpx client; tests inject a
+    MockTransport-backed one, production uses the default infocon.org client.
+    """
     collection_url = item.url
     if not collection_url:
         return {"status": "failed", "error": "no_url"}
@@ -174,70 +256,150 @@ def _download_item(
         return {"status": "failed", "error": "no_files_found"}
 
     total = len(file_list)
-    log.info("HTTP transfer: %d files for %s", total, item.destination_relpath)
+    log.info(
+        "HTTP transfer: %d files for %s (concurrency=%d)",
+        total, item.destination_relpath, concurrency,
+    )
+
+    clients = _WorkerClients(client_factory)
+    # Guards the shared counters below. The single sqlite connection is shared
+    # across workers, so every repo call is serialised through db_lock too.
+    state_lock = threading.Lock()
+    db_lock = threading.Lock()
+    abort = threading.Event()
 
     failed_files: list[str] = []
     total_downloaded = 0
     skipped = 0
-    consecutive_failures = 0
+    processed = 0
+    # Cumulative live byte count for item-level progress. With several files in
+    # flight at once a single file's offset is meaningless, so the UI shows this
+    # monotonic running total (total size unknown → total_bytes stays None).
+    progress_total = 0
+    abort_status: str | None = None
 
-    for index, (rel_path, file_url) in enumerate(file_list, start=1):
-        # The item may have been paused between files — wait here rather
-        # than continuing to download while the user thinks it's stopped.
-        status = wait_while_paused(repo, item.id)
+    def _wait_while_paused_locked(item_id: str) -> str:
+        """Like wait_while_paused, but serialises the shared connection."""
+        while True:
+            with db_lock:
+                current = repo.get_item(item_id)
+            status = current.status if current is not None else "failed"
+            if status != "paused":
+                return status
+            time.sleep(_PAUSE_POLL_INTERVAL)
+
+    def _log_progress_locked() -> None:
+        log.info(
+            "HTTP transfer %s: %d/%d files (%d skipped, %d failed, %.1f MB)",
+            item.destination_relpath, processed, total, skipped,
+            len(failed_files), total_downloaded / (1024 * 1024),
+        )
+
+    def _download_one(rel_path: str, file_url: str) -> None:
+        nonlocal total_downloaded, skipped, processed, progress_total, abort_status
+        if abort.is_set():
+            return
+
+        # The item may have been paused — block here rather than continuing to
+        # download while the user thinks it's stopped.
+        status = _wait_while_paused_locked(item.id)
         if status == "pending":
-            repo.update_item_status(item.id, "downloading")
+            with db_lock:
+                repo.update_item_status(item.id, "downloading")
             broadcast({"type": "item_status", "plan_id": plan_id, "item_id": item.id,
                        "status": "downloading", "collection_key": item.collection_key})
         elif status != "downloading":
-            return {"status": status, "downloaded_bytes": total_downloaded}
+            with state_lock:
+                if abort_status is None:
+                    abort_status = status
+            abort.set()
+            return
 
         destination = (dest_base / rel_path).resolve()
 
         # Containment check — destination must stay inside archive root
         if not str(destination).startswith(str(archive_root_resolved)):
             log.warning("Path escape rejected: %s", destination)
-            failed_files.append(rel_path)
-            continue
+            with state_lock:
+                failed_files.append(rel_path)
+                processed += 1
+            return
 
         # Resume support: a completed file from a prior run is left in place.
         if _is_already_complete(destination):
-            skipped += 1
-            consecutive_failures = 0
-            continue
+            clients.note_success()
+            with state_lock:
+                skipped += 1
+                processed += 1
+                should_log = processed % _PROGRESS_LOG_EVERY == 0 or processed == total
+                if should_log:
+                    _log_progress_locked()
+            return
 
-        def _progress(bytes_so_far: int, total_bytes: int | None, _iid: str = item.id) -> None:
+        last = 0
+
+        def _progress(bytes_so_far: int, _total_bytes: int | None, _iid: str = item.id) -> None:
+            nonlocal last, progress_total
+            with state_lock:
+                progress_total += bytes_so_far - last
+                snapshot = progress_total
+            last = bytes_so_far
             broadcast({
                 "type": "progress",
                 "item_id": _iid,
                 "plan_id": plan_id,
-                "downloaded_bytes": bytes_so_far,
-                "total_bytes": total_bytes,
+                "downloaded_bytes": snapshot,
+                "total_bytes": None,
             })
 
-        result = download(file_url, destination, http_client=holder.client, progress=_progress)
+        result = download(
+            file_url, destination, http_client=clients.get(), progress=_progress
+        )
         if result.state == DownloadState.COMPLETE:
-            total_downloaded += result.downloaded_bytes
-            consecutive_failures = 0
+            clients.note_success()
+            with state_lock:
+                total_downloaded += result.downloaded_bytes
+                processed += 1
+                should_log = processed % _PROGRESS_LOG_EVERY == 0 or processed == total
+                if should_log:
+                    _log_progress_locked()
             log.debug("Downloaded %s (%d B)", rel_path, result.downloaded_bytes)
         else:
             log.warning("File download failed %s: %s", file_url, result.error)
-            failed_files.append(rel_path)
-            consecutive_failures += 1
-            if consecutive_failures >= _CONSECUTIVE_FAILURES_BEFORE_REFRESH:
+            failures = clients.note_failure()
+            with state_lock:
+                failed_files.append(rel_path)
+                processed += 1
+                should_log = processed % _PROGRESS_LOG_EVERY == 0 or processed == total
+                if should_log:
+                    _log_progress_locked()
+            if failures >= _CONSECUTIVE_FAILURES_BEFORE_REFRESH:
                 log.warning(
-                    "Item %s: %d consecutive failures — refreshing HTTP connection",
-                    item.id[:8], consecutive_failures,
+                    "Item %s: %d consecutive failures on one worker — "
+                    "refreshing its HTTP connection",
+                    item.id[:8], failures,
                 )
-                holder.refresh()
-                consecutive_failures = 0
+                clients.refresh()
 
-        if index % _PROGRESS_LOG_EVERY == 0 or index == total:
-            log.info(
-                "HTTP transfer %s: %d/%d files (%d skipped, %d failed, %.1f MB)",
-                item.destination_relpath, index, total, skipped,
-                len(failed_files), total_downloaded / (1024 * 1024),
-            )
+    try:
+        with ThreadPoolExecutor(
+            max_workers=concurrency, thread_name_prefix=f"http-{item.id[:6]}"
+        ) as pool:
+            futures = [
+                pool.submit(_download_one, rel_path, file_url)
+                for rel_path, file_url in file_list
+            ]
+            for future in futures:
+                # Surface an unexpected worker crash instead of swallowing it,
+                # but keep draining the rest of the pool.
+                exc = future.exception()
+                if exc is not None:
+                    log.exception("HTTP worker crashed for %s: %s", item.id[:8], exc)
+    finally:
+        clients.close_all()
+
+    if abort_status is not None:
+        return {"status": abort_status, "downloaded_bytes": total_downloaded}
 
     if failed_files:
         log.warning("Item %s: %d file(s) failed", item.id, len(failed_files))
@@ -265,6 +427,7 @@ def run_http_transfer(
     conn = open_db(db_path)
     migrate(conn)
     repo = PlanRepository(conn)
+    concurrency = _resolve_concurrency(conn)
 
     try:
         items = repo.list_items(plan_id)
@@ -290,7 +453,10 @@ def run_http_transfer(
                 log.info("HTTP transfer: item %s -> %s", item.id[:8], item.destination_relpath)
                 repo.update_item_status(item.id, "downloading")
 
-                outcome = _download_item(item, archive_root, holder, broadcast, plan_id, repo)
+                outcome = _download_item(
+                    item, archive_root, holder, broadcast, plan_id, repo,
+                    concurrency=concurrency,
+                )
                 outcomes[item.id] = outcome
 
                 repo.update_item_status(item.id, outcome["status"])

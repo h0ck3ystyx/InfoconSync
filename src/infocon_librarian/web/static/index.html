@@ -130,6 +130,14 @@
               <p class="setting-hint">Applies to torrent transfers. 0 = unlimited.</p>
             </div>
           </div>
+          <div class="setting-row">
+            <label for="setting-http-concurrency">HTTPS parallel files</label>
+            <div class="setting-control">
+              <input type="number" id="setting-http-concurrency" min="1" max="8" step="1">
+              <span class="setting-unit">files</span>
+              <p class="setting-hint">How many files an HTTPS collection downloads at once. Higher is faster but harder on infocon.org, which resets connections under load. Range 1–8; default 4.</p>
+            </div>
+          </div>
         </div>
 
         <div class="card">

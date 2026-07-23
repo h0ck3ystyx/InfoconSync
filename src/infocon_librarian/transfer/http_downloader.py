@@ -53,7 +53,10 @@ class DownloadResult:
 ProgressCallback = Callable[[int, int | None], None]
 
 _SIDECAR_META_SUFFIX = ".part.meta"
-_CHUNK = 64 * 1024  # 64 KiB
+# 1 MiB read chunk. Larger chunks mean far fewer Python-level iterations and
+# write/progress calls per file, which matters most for the big media payloads;
+# the resume sidecar is still flushed on a byte interval, not per chunk.
+_CHUNK = 1024 * 1024  # 1 MiB
 _META_FLUSH_INTERVAL = 4 * 1024 * 1024  # persist resume offset every 4 MiB
 
 
