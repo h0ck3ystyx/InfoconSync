@@ -7,6 +7,10 @@ _DEFAULTS: dict[str, str] = {
     "torrent_stall_timeout": "300",
     "torrent_download_limit": "0",
     "torrent_upload_limit": "0",
+    # Number of files an HTTPS collection downloads at once. infocon.org is
+    # volunteer DEF CON infrastructure that resets connections under load, so
+    # the default is deliberately gentle; callers clamp to HTTP_CONCURRENCY_MAX.
+    "http_concurrency": "4",
 }
 
 

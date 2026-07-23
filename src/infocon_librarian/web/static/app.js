@@ -1166,6 +1166,7 @@
         document.getElementById('setting-stall-timeout').value = data.torrent_stall_timeout ?? 300;
         document.getElementById('setting-dl-limit').value = data.torrent_download_limit ?? 0;
         document.getElementById('setting-ul-limit').value = data.torrent_upload_limit ?? 0;
+        document.getElementById('setting-http-concurrency').value = data.http_concurrency ?? 4;
         document.getElementById('setting-archive-root').textContent = data.archive_root || '—';
       });
     }
@@ -1174,12 +1175,14 @@
       const timeout = parseInt(document.getElementById('setting-stall-timeout').value, 10);
       const dl = parseInt(document.getElementById('setting-dl-limit').value, 10);
       const ul = parseInt(document.getElementById('setting-ul-limit').value, 10);
+      const conc = parseInt(document.getElementById('setting-http-concurrency').value, 10);
       const statusEl = document.getElementById('settings-save-status');
 
       api('PUT', '/settings', {
         torrent_stall_timeout: isNaN(timeout) ? 300 : Math.max(0, timeout),
         torrent_download_limit: isNaN(dl) ? 0 : Math.max(0, dl),
         torrent_upload_limit: isNaN(ul) ? 0 : Math.max(0, ul),
+        http_concurrency: isNaN(conc) ? 4 : Math.min(8, Math.max(1, conc)),
       }).then(({ ok }) => {
         statusEl.textContent = ok ? 'Saved.' : 'Save failed.';
         statusEl.className = 'settings-status ' + (ok ? 'settings-ok' : 'settings-err');

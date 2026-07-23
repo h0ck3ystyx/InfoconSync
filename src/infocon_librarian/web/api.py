@@ -852,7 +852,12 @@ def get_receipt(receipt_id: str) -> Response:
 # Settings
 # ---------------------------------------------------------------------------
 
-_ALLOWED_SETTINGS = {"torrent_stall_timeout", "torrent_download_limit", "torrent_upload_limit"}
+_ALLOWED_SETTINGS = {
+    "torrent_stall_timeout",
+    "torrent_download_limit",
+    "torrent_upload_limit",
+    "http_concurrency",
+}
 
 
 @api_bp.route("/settings", methods=["GET"])
@@ -878,17 +883,25 @@ def put_settings() -> Response:
     if db is None:
         return jsonify({"error": "not_configured"}), 503
 
+    from infocon_librarian.services.http_transfer_runner import (  # noqa: PLC0415
+        HTTP_CONCURRENCY_MAX,
+    )
+
     body = request.get_json(silent=True) or {}
     updates: dict[str, str] = {}
     for key in _ALLOWED_SETTINGS:
-        if key in body:
-            try:
-                val = int(body[key])
-                if val < 0:
-                    return jsonify({"error": "invalid_value", "key": key}), 400
-                updates[key] = str(val)
-            except (TypeError, ValueError):
-                return jsonify({"error": "invalid_value", "key": key}), 400
+        if key not in body:
+            continue
+        try:
+            val = int(body[key])
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid_value", "key": key}), 400
+        # http_concurrency needs at least one worker and is capped at the same
+        # ceiling the runner enforces; every other setting is just non-negative.
+        valid = 1 <= val <= HTTP_CONCURRENCY_MAX if key == "http_concurrency" else val >= 0
+        if not valid:
+            return jsonify({"error": "invalid_value", "key": key}), 400
+        updates[key] = str(val)
 
     from infocon_librarian.storage.settings_repository import SettingsRepository  # noqa: PLC0415
 
