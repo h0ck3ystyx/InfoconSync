@@ -30,7 +30,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-timeout>=2.3",
     "ruff>=0.4",
-    "mypy>=1.10",
+    "mypy>=2.4.0",
     "playwright>=1.44",
     "pytest-playwright>=0.5",
 ]
