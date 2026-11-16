@@ -1,5 +1,6 @@
 # Test environment only. Production runs directly on the VM under systemd.
-FROM debian:13-slim
+ARG BASE_IMAGE=debian:13-slim
+FROM ${BASE_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-libtorrent ca-certificates systemd \
     && rm -rf /var/lib/apt/lists/*

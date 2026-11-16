@@ -1,4 +1,4 @@
-# Tested Linux service runtime. Native libtorrent is provided by Debian.
+# Tested Linux service runtime. Native libtorrent is provided by Debian or Ubuntu.
 flask==3.1.3
 httpx==0.28.1
 platformdirs==4.14.5

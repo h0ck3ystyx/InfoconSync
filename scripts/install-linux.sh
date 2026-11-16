@@ -6,17 +6,34 @@ if [[ $(id -u) != 0 ]]; then
   exit 1
 fi
 if [[ ! -r /etc/os-release ]]; then
-  echo "This installer targets Debian 13. Other distributions need manual installation." >&2
+  echo "Cannot identify this OS. Supported: Debian 13 and Ubuntu 24.04 LTS." >&2
   exit 1
 fi
 . /etc/os-release
-if [[ ${ID:-} != debian || ${VERSION_ID:-} != 13 ]]; then
-  echo "This installer supports Debian 13 only." >&2
-  exit 1
-fi
+case "${ID:-}:${VERSION_ID:-}" in
+  debian:13|ubuntu:24.04) ;;
+  *)
+    echo "Supported: Debian 13 and Ubuntu 24.04 LTS. Detected: ${PRETTY_NAME:-unknown}." >&2
+    exit 1
+    ;;
+esac
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 apt-get update
+if [[ $ID == ubuntu ]] && ! apt-cache show python3-libtorrent >/dev/null 2>&1; then
+  echo "Ubuntu's Universe repository is required for python3-libtorrent and python3-venv." >&2
+  echo "Enable it with: sudo add-apt-repository universe" >&2
+  echo "Then rerun this installer." >&2
+  exit 1
+fi
 apt-get install -y python3 python3-venv python3-libtorrent ca-certificates
+# Use the distro interpreter that matches the native libtorrent extension.
+/usr/bin/python3 - <<'PYTHON'
+import sys
+import libtorrent
+assert sys.version_info >= (3, 11), "Python 3.11 or newer is required"
+assert libtorrent.__version__.startswith("2."), "libtorrent 2.x is required"
+print("System Python", sys.version.split()[0], "libtorrent", libtorrent.__version__)
+PYTHON
 if ! id infocon >/dev/null 2>&1; then
   useradd --system --user-group --home-dir /var/lib/infocon-librarian --shell /usr/sbin/nologin infocon
 fi
@@ -33,7 +50,7 @@ trap 'rm -rf -- "$build_dir"' EXIT
 tar -C "$repo_dir" --exclude=.git --exclude=.venv --exclude=build --exclude=dist \
   --exclude='*.egg-info' --exclude=__pycache__ --exclude=.pytest_cache \
   --exclude=.ruff_cache -cf - . | tar -C "$build_dir" -xf -
-python3 -m venv --system-site-packages "$release_dir"
+/usr/bin/python3 -m venv --system-site-packages "$release_dir"
 "$release_dir/bin/python" -m pip install --constraint "$repo_dir/deploy/linux/constraints.txt" \
   "$build_dir[server]"
 # Test from outside the source directory so editable imports cannot mask missing assets.

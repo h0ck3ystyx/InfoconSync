@@ -1,7 +1,7 @@
 # Linux VM on Proxmox
 
-This deployment runs directly on a Debian 13 VM, as one systemd service. It listens
-on **0.0.0.0:8080** and uses password login. Use the browser UI to check upstream,
+This deployment runs directly on a Debian 13 or Ubuntu 24.04 LTS VM, as one systemd
+service. It listens on **0.0.0.0:8080** and uses password login. Use the browser UI to check upstream,
 review plans, and update the NAS mirror. The existing `infocon-librarian` CLI check,
 plan, sync, verify, and receipts commands remain placeholders and must not be used
 for scheduled synchronization.
@@ -10,8 +10,8 @@ for scheduled synchronization.
 
 Start with 2 vCPUs, 4 GB RAM and a 32 GB local system disk. Bridge the VM onto your
 LAN and reserve its IP in DHCP (examples below use `192.168.1.50`). Install Debian
-13, SSH for administration, and the Proxmox guest agent if desired. Archive media
-will live on the NAS; the VM disk holds Python, SQLite, logs and resume metadata.
+13 or Ubuntu 24.04 LTS, SSH for administration, and the Proxmox guest agent if
+desired. Archive media will live on the NAS; the VM disk holds Python, SQLite, logs and resume metadata.
 
 Use the VM's local disk for `/var/lib/infocon-librarian`. The database uses SQLite
 WAL and must not be on NFS or SMB. Backups of the VM do not back up the NAS mirror.
@@ -68,8 +68,8 @@ cd InfoconSync
 sudo bash scripts/install-linux.sh
 ```
 
-The installer installs Debian's `python3-libtorrent`, creates an isolated release
-venv using system Python with `--system-site-packages`, installs the package with
+The installer supports Debian 13 and Ubuntu 24.04 LTS. It installs the distribution's
+`python3-libtorrent` and creates an isolated release venv using system Python with `--system-site-packages`, installs the package with
 tested runtime constraints, and verifies packaged UI assets. It creates:
 
 - `/opt/infocon-librarian/releases/<release>` and a `current` symlink.
@@ -80,6 +80,12 @@ tested runtime constraints, and verifies packaged UI assets. It creates:
 
 It does **not** mount shares, initialize an archive, or start/enable the service.
 It preserves existing configuration and service units on subsequent installs.
+
+On Ubuntu, `python3-libtorrent` and `python3-venv` require the **Universe**
+repository. If the installer reports it is unavailable, run
+`sudo add-apt-repository universe` and retry. The installer uses `/usr/bin/python3`
+so the venv matches the distribution's native libtorrent bindings, even if another
+Python is installed in `/usr/local/bin`.
 
 ## 4. Configure the service and archive identity
 
@@ -210,9 +216,13 @@ resets, or uninstalling the service.
 python -m pytest tests/unit tests/integration tests/engine -q
 python -m pytest tests/e2e -q
 bash -n scripts/install-linux.sh
-# Clean Debian environment for package/native-binding checks, not production hosting:
+# Clean Linux environment for package/native-binding checks, not production hosting:
 docker build -f deploy/linux/smoke.Dockerfile -t infocon-linux-smoke .
 docker run --rm infocon-linux-smoke
+# Ubuntu 24.04 uses the same test image definition:
+docker build --build-arg BASE_IMAGE=ubuntu:24.04 \
+  -f deploy/linux/smoke.Dockerfile -t infocon-ubuntu-smoke .
+docker run --rm infocon-ubuntu-smoke
 docker run --rm --mount type=volume,dst=/archive infocon-linux-smoke \
   python scripts/smoke-linux-service.py
 ```
