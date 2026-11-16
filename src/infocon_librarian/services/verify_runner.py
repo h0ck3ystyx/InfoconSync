@@ -16,6 +16,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from infocon_librarian.service_runtime import (
+    checkpoint,
+    start_worker,
+)
+
 if TYPE_CHECKING:
     from infocon_librarian.torrent.adapter import TorrentAdapter
 
@@ -39,7 +44,7 @@ def manifest_check(
     *,
     section: str,
     archive_root: Path,
-    adapter: "TorrentAdapter",
+    adapter: TorrentAdapter,
 ) -> tuple[str, str | None, dict]:
     """Stat each file in the torrent manifest. Returns (level, error_summary, details).
 
@@ -61,15 +66,20 @@ def manifest_check(
     size_smaller: list[dict] = []  # local < expected — truncated or wrong file
 
     for tf in manifest.files:
+        checkpoint()
         local = save_root / tf.relative_path
         if not local.exists():
             missing.append(tf.relative_path)
         else:
             actual = local.stat().st_size
             if actual > tf.size:
-                size_larger.append({"path": tf.relative_path, "expected": tf.size, "actual": actual})
+                size_larger.append(
+                    {"path": tf.relative_path, "expected": tf.size, "actual": actual}
+                )
             elif actual < tf.size:
-                size_smaller.append({"path": tf.relative_path, "expected": tf.size, "actual": actual})
+                size_smaller.append(
+                    {"path": tf.relative_path, "expected": tf.size, "actual": actual}
+                )
 
     # Split missing into wholly-absent subdirectories vs individual missing files.
     # libtorrent file_path() format: CollectionName/SubDir/file.ext
@@ -80,6 +90,7 @@ def manifest_check(
     _subdir_missing: dict[str, int] = defaultdict(int)
     _missing_set = set(missing)
     for tf in manifest.files:
+        checkpoint()
         _parts = tf.relative_path.split("/")
         if len(_parts) >= 3:  # CollectionName/SubDir/file
             _subdir_total[_parts[1]] += 1
@@ -136,7 +147,7 @@ def run_verify(
     archive_root: Path,
     torrent_url: str,
     broadcast: Callable[[dict[str, Any]], None],
-    adapter: "TorrentAdapter",
+    adapter: TorrentAdapter,
 ) -> None:
     """Fetch torrent, run manifest check, persist result. Intended for a daemon thread."""
     conn = open_db(db_path)
@@ -171,7 +182,8 @@ def run_verify(
 
         torrent_bytes = result.body
         section = collection_key.split("/", 1)[0]
-        log.info("Verify %s: manifest-checking %s (%s bytes torrent)", verify_id, collection_key, len(torrent_bytes))
+        log.info("Verify %s: manifest-checking %s (%s bytes torrent)",
+                 verify_id, collection_key, len(torrent_bytes))
 
         level, error, details = manifest_check(
             torrent_bytes,
@@ -228,7 +240,7 @@ def start_verify_thread(
     archive_root: Path,
     torrent_url: str,
     broadcast: Callable[[dict[str, Any]], None],
-    adapter: "TorrentAdapter",
+    adapter: TorrentAdapter,
 ) -> tuple[str, threading.Thread]:
     """Spin up a daemon thread to run the verification. Returns (verify_id, thread)."""
     verify_id = str(uuid.uuid4())
@@ -247,5 +259,5 @@ def start_verify_thread(
         daemon=True,
         name=f"verify-{verify_id[:8]}",
     )
-    t.start()
+    start_worker(t)
     return verify_id, t

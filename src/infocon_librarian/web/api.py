@@ -94,8 +94,19 @@ def health() -> Response:
         "archive_root": None,
     }
 
+    runtime = current_app.config.get("SERVICE_RUNTIME")
+    if runtime is not None:
+        payload["service"] = "stopped" if runtime.stopped.is_set() else "running"
+        payload["service_message"] = runtime.reason
+        if runtime.stopped.is_set():
+            payload["status"] = "degraded"
+            return jsonify(payload)
     if root_info is not None:
-        usage = shutil.disk_usage(root_info.canonical_path)
+        try:
+            usage = shutil.disk_usage(root_info.canonical_path)
+        except OSError:
+            payload["status"] = "degraded"
+            return jsonify(payload)
         payload["archive_root"] = {
             "path": root_info.canonical_path,
             "volume_fingerprint": root_info.volume_fingerprint,
@@ -602,7 +613,9 @@ def approve_http_fallback(item_id: str) -> Response:
     if db is None or root_info is None or db_path is None:
         return jsonify({"error": "not_configured"}), 503
 
-    from infocon_librarian.services.http_transfer_runner import start_http_transfer_thread  # noqa: PLC0415
+    from infocon_librarian.services.http_transfer_runner import (
+        start_http_transfer_thread,  # noqa: PLC0415
+    )
     from infocon_librarian.storage.plan_repository import PlanRepository  # noqa: PLC0415
 
     repo = PlanRepository(db)
@@ -666,7 +679,7 @@ def create_verify() -> Response:
     adapter = current_app.config.get("_ADAPTER")
     if adapter is None:
         return jsonify({"error": "torrent_engine_unavailable",
-                        "detail": "Start the app with libtorrent installed to enable verification"}), 503
+                        "detail": "Install libtorrent to enable verification"}), 503
 
     db = getattr(g, "db", None)
     root_info = getattr(g, "archive_root_info", None)

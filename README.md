@@ -2,7 +2,7 @@
 
 A local-first desktop application for maintaining an existing [InfoCon](https://infocon.org) archive. It detects what changed upstream, builds a reviewable transfer plan, executes it using BitTorrent as the primary mechanism, and produces auditable receipts.
 
-**macOS** is the primary release target. **Windows 10/11** runs from source (see [Install (Windows)](#install-windows)); native packaging lands after the Windows packaging smoke tests pass. Linux is supported after its packaging smoke tests pass.
+**macOS** is the primary release target. **Windows 10/11** runs from source (see [Install (Windows)](#install-windows)); native packaging lands after the Windows packaging smoke tests pass. Linux VM deployment uses a separate server mode; see the installation guide below.
 
 ---
 
@@ -14,7 +14,14 @@ A local-first desktop application for maintaining an existing [InfoCon](https://
 - Falls back to **HTTPS only** when no usable torrent exists — never silently, always labelled
 - Never downgrades a torrent transfer to HTTP without explicit user approval
 - Produces a signed receipt for every completed or failed plan
-- Binds only to `127.0.0.1` — the UI is never reachable from other machines
+- Desktop mode binds to `127.0.0.1`; the optional Linux service supports LAN access
+
+## Linux VM / NAS deployment
+
+For a headless Linux VM (including Proxmox), use the
+[Linux VM installation guide](docs/linux-vm.md). The dedicated `infocon-server`
+service listens on `0.0.0.0:8080`, provides password login, and checks the NAS
+mount identity before allowing transfers.
 
 ## Requirements
 
@@ -91,7 +98,7 @@ Logs redact all routable peer IP addresses and session tokens automatically. See
 
 ## Security
 
-- Flask binds loopback only; a per-launch cryptographically random capability token bootstraps a session cookie (`HttpOnly`, `SameSite=Strict`)
+- Desktop mode binds loopback only; a per-launch cryptographically random capability token bootstraps a session cookie (`HttpOnly`, `SameSite=Strict`)
 - Every state-changing route requires a same-origin `Origin` header, session cookie, and CSRF token
 - Torrent metadata paths are validated through `SafeArchivePath` before the engine sees them — `..`, absolute paths, empty components, and reserved platform names are all rejected
 - No `unsafe-inline` in the Content Security Policy; all UI assets are served from `'self'`

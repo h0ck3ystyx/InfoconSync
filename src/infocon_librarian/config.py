@@ -62,3 +62,12 @@ def default_config() -> AppConfig:
         receipts_dir=data / "receipts",
         snapshots_dir=data / "archive-snapshots",
     )
+
+
+def config_at(data: Path) -> AppConfig:
+    """Keep VM metadata on a local filesystem, separate from archive media."""
+    return AppConfig(
+        config_dir=data / "config", data_dir=data, cache_dir=data / "cache",
+        log_dir=data / "logs", torrents_dir=data / "torrents", jobs_dir=data / "jobs",
+        receipts_dir=data / "receipts", snapshots_dir=data / "archive-snapshots",
+    )

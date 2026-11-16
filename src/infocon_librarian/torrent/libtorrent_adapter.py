@@ -137,6 +137,7 @@ class LibtorrentAdapter:
         )
         self._handles: dict[str, lt.torrent_handle] = {}
         self._lock = threading.Lock()
+        self._resume_lock = threading.Lock()
 
     def set_rate_limits(self, *, download_kbps: int, upload_kbps: int) -> None:
         """Apply torrent-session rate limits (0 = unlimited). Takes effect immediately."""
@@ -269,6 +270,10 @@ class LibtorrentAdapter:
 
     def save_resume_data(self, job_id: EngineJobId) -> bytes:
         """Serialize resume state; blocks until the alert arrives."""
+        with self._resume_lock:
+            return self._save_resume_data(job_id)
+
+    def _save_resume_data(self, job_id: EngineJobId) -> bytes:
         handle = self._get_handle(job_id)
         handle.save_resume_data(lt.save_resume_flags_t.flush_disk_cache)
 

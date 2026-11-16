@@ -65,3 +65,16 @@ Run against a local fixture archive (not the live InfoCon site):
 12. Reconnect the drive; verify resume is offered
 13. Run `infocon-librarian receipts list --format json` and verify output is valid JSON
 14. Verify browser UI has no external network requests (check browser DevTools Network tab)
+
+## Linux VM service
+
+- [ ] Built wheel contains static assets and the login template
+- [ ] Clean Debian install imports system libtorrent and serves UI assets
+- [ ] LAN login, logout, Host validation, login CSRF and rate limiting pass
+- [ ] NAS source/identity checks reject missing or unexpected shares
+- [ ] Missing NAS at VM boot prevents service work
+- [ ] Real NAS outage latches transfer work off until explicit restart
+- [ ] SIGTERM saves torrent resume state and preserves HTTP partials
+- [ ] Restart keeps completed items and allows interrupted plans to be resumed
+- [ ] Mixed HTTP/torrent plan is not finalized while either worker remains active
+- [ ] Stopped-service state backup and previous-release rollback verified

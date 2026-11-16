@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+import threading
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, g, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory, session, url_for
+from werkzeug.wrappers import Response
 
 from infocon_librarian.web.api import api_bp
 from infocon_librarian.web.auth import add_security_headers, auth_bp
@@ -30,6 +33,10 @@ def create_app(
     """
     app = Flask(__name__, static_folder=None)
 
+    mutation_lock = threading.Lock()
+    app.permanent_session_lifetime = timedelta(hours=12)
+    app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
+
     app.config["SECRET_KEY"] = secret_key or secrets.token_hex(32)
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
@@ -48,9 +55,31 @@ def create_app(
     # Minimal web routes
     web_bp_routes(app)
 
+    from infocon_librarian.service_runtime import ServiceInterrupted
+
+    @app.errorhandler(ServiceInterrupted)
+    def _interrupted(exc: ServiceInterrupted) -> tuple[Response, int]:
+        return jsonify({"error": "service_interrupted", "detail": str(exc)}), 503
+
     # Request lifecycle hooks
     @app.before_request
-    def _open_db() -> None:  # type: ignore[return]
+    def _service_guard() -> Response | tuple[Response, int] | None:
+        runtime = app.config.get("SERVICE_RUNTIME")
+        if (runtime and session.get("authenticated")
+                and request.path.startswith("/api/") and request.method != "GET"):
+            from infocon_librarian.service_runtime import ServiceInterrupted
+
+            mutation_lock.acquire()
+            g.service_mutation_lock = True
+            try:
+                runtime.checkpoint(force=True)
+            except ServiceInterrupted:
+                return jsonify({"error": "archive_unavailable_or_service_stopping",
+                                "detail": runtime.reason}), 503
+        return None
+
+    @app.before_request
+    def _open_db() -> None:
         path = app.config.get("_DB_PATH")
         if path is not None:
             try:
@@ -69,12 +98,23 @@ def create_app(
 
     @app.teardown_request
     def _close_db(exc: BaseException | None) -> None:
+        if g.pop("service_mutation_lock", False):
+            mutation_lock.release()
         db: sqlite3.Connection | None = g.pop("db", None)
         if db is not None:
             db.close()
 
     @app.after_request
     def _security_headers(response: Response) -> Response:
+        if app.config.get("SERVICE_AUTH"):
+            response.headers["Cache-Control"] = "no-store"
+            # Refresh both cookies together for the sliding session lifetime.
+            if session.get("authenticated") and session.get("csrf_token"):
+                response.set_cookie(
+                    "csrftoken", session["csrf_token"], httponly=False,
+                    samesite="Strict", max_age=12 * 3600,
+                    secure=app.config["SESSION_COOKIE_SECURE"],
+                )
         return add_security_headers(response)
 
     return app
@@ -88,6 +128,8 @@ def web_bp_routes(app: Flask) -> None:
         from flask import abort, session  # noqa: PLC0415
 
         if not session.get("authenticated"):
+            if app.config.get("SERVICE_AUTH"):
+                return app.redirect(url_for("auth.login"))
             abort(403)
         return send_from_directory(str(static_dir), "index.html")
 

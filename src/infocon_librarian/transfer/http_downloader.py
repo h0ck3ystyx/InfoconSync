@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -26,6 +25,7 @@ from typing import Any
 import httpx
 
 from infocon_librarian.remote.client import new_http_client
+from infocon_librarian.service_runtime import checkpoint, interruptible_sleep
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def download(
                 "Retrying %s (attempt %d/%d) after %s: sleeping %.1fs",
                 url, attempt + 1, max_retries, result.error, delay,
             )
-            time.sleep(delay)
+            interruptible_sleep(delay)
             attempt += 1
             result = _download(url, destination, client=client, progress=progress)
         return result
@@ -160,6 +160,7 @@ def _download(
     client: httpx.Client,
     progress: ProgressCallback | None,
 ) -> DownloadResult:
+    checkpoint()
     part_path = destination.with_suffix(destination.suffix + ".part")
     meta_path = Path(str(part_path) + ".meta")
 
@@ -226,6 +227,7 @@ def _download(
             append = resp.status_code == 206
             bytes_so_far = sidecar.bytes_written if (sidecar and append) else 0
 
+            checkpoint()
             destination.parent.mkdir(parents=True, exist_ok=True)
             if append and part_path.exists() and part_path.stat().st_size > bytes_so_far:
                 # A prior attempt may have written a chunk to .part but crashed
@@ -238,6 +240,7 @@ def _download(
             last_meta_flush = bytes_so_far
             with open(part_path, mode) as fh:
                 for chunk in resp.iter_bytes(chunk_size=_CHUNK):
+                    checkpoint()
                     fh.write(chunk)
                     bytes_so_far += len(chunk)
                     # Flush the resume sidecar periodically rather than every 64 KB
@@ -257,6 +260,7 @@ def _download(
                         progress(bytes_so_far, total)
 
         # Atomic rename
+        checkpoint()
         part_path.replace(destination)
         meta_path.unlink(missing_ok=True)
         return DownloadResult(

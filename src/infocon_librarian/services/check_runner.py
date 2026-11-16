@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
+from infocon_librarian.service_runtime import (
+    checkpoint,
+    start_worker,
+)
+
 if TYPE_CHECKING:
     from infocon_librarian.torrent.adapter import TorrentAdapter
 
@@ -25,7 +30,11 @@ from infocon_librarian.services.check_service import check_collections
 from infocon_librarian.services.verify_runner import manifest_check
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
-from infocon_librarian.storage.repositories import ArchiveRootRepository, CheckRepository, VerificationRepository
+from infocon_librarian.storage.repositories import (
+    ArchiveRootRepository,
+    CheckRepository,
+    VerificationRepository,
+)
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +86,7 @@ def run_check(
     section: str | None,
     broadcast: Callable[[dict[str, Any]], None],
     base_url: str = INFOCON_BASE_URL,
-    adapter: "TorrentAdapter | None" = None,
+    adapter: TorrentAdapter | None = None,
 ) -> None:
     """Execute a full upstream check and persist results.
 
@@ -107,6 +116,7 @@ def run_check(
 
         with RemoteClient() as client:
             for sec_idx, sec in enumerate(sections_to_scan, 1):
+                checkpoint()
                 broadcast({
                     "type": "check_progress",
                     "check_id": check_id,
@@ -231,7 +241,9 @@ def run_check(
                     for verify_idx, (item, ckey, torrent_url) in enumerate(to_verify, 1):
                         try:
                             _parts = urlsplit(torrent_url)
-                            encoded_url = urlunsplit(_parts._replace(path=quote(unquote(_parts.path), safe="/")))
+                            encoded_url = urlunsplit(
+                                _parts._replace(path=quote(unquote(_parts.path), safe="/"))
+                            )
                             resp = vclient.fetch(encoded_url)
                             if resp.status_code == 404:
                                 log.warning("Check %s: no torrent for %s (404)", check_id, ckey)
@@ -313,7 +325,7 @@ def start_check_thread(
     section: str | None,
     broadcast: Callable[[dict[str, Any]], None],
     base_url: str = INFOCON_BASE_URL,
-    adapter: "TorrentAdapter | None" = None,
+    adapter: TorrentAdapter | None = None,
 ) -> threading.Thread:
     """Spin up a daemon thread to run the check. Returns the thread."""
     t = threading.Thread(
@@ -330,5 +342,5 @@ def start_check_thread(
         daemon=True,
         name=f"check-{check_id[:8]}",
     )
-    t.start()
+    start_worker(t)
     return t

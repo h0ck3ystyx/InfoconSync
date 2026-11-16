@@ -78,6 +78,15 @@ class PlanRepository:
         )
         self._conn.commit()
 
+    def finish_if_running(self, plan_id: str, state: str) -> bool:
+        """Claim finalization once when HTTP and torrent workers finish together."""
+        cursor = self._conn.execute(
+            "UPDATE plans SET state = ? WHERE id = ? AND state = 'running'",
+            (state, plan_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
     def requeue_incomplete_items(self, plan_id: str) -> int:
         """Flip a plan's failed/downloading items back to ``pending`` for a retry.
 

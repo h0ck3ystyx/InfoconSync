@@ -1,13 +1,13 @@
 """HTTP client for remote InfoCon listings — timeouts, retries, conditional GET."""
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from infocon_librarian.domain.errors import LibrarianError
+from infocon_librarian.service_runtime import checkpoint, interruptible_sleep
 
 _USER_AGENT = "infocon-librarian/0.1 (archive steward)"
 _DEFAULT_TIMEOUT = 30.0
@@ -87,6 +87,7 @@ class RemoteClient:
 
         last_err: Exception | None = None
         for attempt in range(self._max_retries):
+            checkpoint()
             try:
                 resp = self._http.get(url, headers=headers)
 
@@ -111,7 +112,7 @@ class RemoteClient:
                 # Retryable status code
                 last_err = Exception(f"HTTP {resp.status_code}")
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay_base * (2**attempt))
+                    interruptible_sleep(self._retry_delay_base * (2**attempt))
 
             except httpx.TransportError as exc:
                 # Any transport-level failure is transient: connection resets and
@@ -121,7 +122,7 @@ class RemoteClient:
                 # an unhandled traceback.
                 last_err = exc
                 if attempt < self._max_retries - 1:
-                    time.sleep(self._retry_delay_base * (2**attempt))
+                    interruptible_sleep(self._retry_delay_base * (2**attempt))
 
         raise RemoteFetchError(
             f"Failed to fetch {url!r} after {self._max_retries} attempts: {last_err}"

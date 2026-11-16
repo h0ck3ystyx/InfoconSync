@@ -257,7 +257,7 @@ class VerificationRepository:
                 result[key] = level
         return result
 
-    def get_all_latest(self, archive_root_id: str) -> dict[str, "VerificationRecord"]:
+    def get_all_latest(self, archive_root_id: str) -> dict[str, VerificationRecord]:
         """Return {collection_key: record} for the most recent verification of each key."""
         rows = self._conn.execute(
             "SELECT * FROM verifications WHERE archive_root_id=? ORDER BY verified_at DESC",

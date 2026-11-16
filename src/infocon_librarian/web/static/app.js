@@ -7,7 +7,6 @@
       const m = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
       return m ? decodeURIComponent(m[1]) : '';
     }
-    const csrf = _getCsrf();
 
     // ---- Utility ----
     function api(method, path, body) {
@@ -15,13 +14,27 @@
         method,
         headers: { 'Content-Type': 'application/json' }
       };
+      const csrf = _getCsrf();
       if (csrf) opts.headers['X-Csrf-Token'] = csrf;
       if (body !== undefined) opts.body = JSON.stringify(body);
       return fetch('/api' + path, opts).then(r => {
+        if (r.status === 401) window.location.assign('/login');
         const ct = r.headers.get('content-type') || '';
         const isJson = ct.includes('application/json');
         return (isJson ? r.json() : r.text().then(t => ({ error: t.slice(0, 120) })))
           .then(d => ({ ok: r.ok, status: r.status, data: d }));
+      });
+    }
+
+    const logoutButton = document.getElementById('btn-logout');
+    if (logoutButton) {
+      // Desktop mode has no password login; hide the control there.
+      fetch('/login', { method: 'HEAD' }).then(r => {
+        logoutButton.hidden = !r.ok;
+      });
+      logoutButton.addEventListener('click', () => {
+        fetch('/logout', { method: 'POST', headers: { 'X-Csrf-Token': _getCsrf() } })
+          .then(r => { if (r.ok) window.location.assign('/login'); });
       });
     }
 
@@ -290,9 +303,17 @@
       label.textContent = ok ? 'connected' : 'error';
     }
 
-    api('GET', '/health').then(({ ok, data }) => {
-      updateConnStatus(ok && data.status === 'ok');
-    }).catch(() => updateConnStatus(false));
+    function refreshHealth() {
+      api('GET', '/health').then(({ ok, data }) => {
+        updateConnStatus(ok && data.status === 'ok');
+        if (data.service === 'stopped') {
+          document.getElementById('conn-label').textContent =
+            'Transfers stopped — check the NAS mount and restart the service';
+        }
+      }).catch(() => updateConnStatus(false));
+    }
+    refreshHealth();
+    setInterval(refreshHealth, 15000);
 
     // Load the last completed check on startup so collections are visible immediately
     api('GET', '/checks/latest').then(({ ok, data }) => {

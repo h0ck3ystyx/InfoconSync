@@ -21,6 +21,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
+from infocon_librarian.service_runtime import (
+    ServiceInterrupted,
+    checkpoint,
+    interruptible_sleep,
+    start_worker,
+)
+
 if TYPE_CHECKING:
     from infocon_librarian.torrent.adapter import TorrentAdapter
 
@@ -66,7 +73,10 @@ def run_torrent_transfer(
     migrate(conn)
     repo = PlanRepository(conn)
 
+    active_job = None
+    resume_path = None
     try:
+        checkpoint()
         items = repo.list_items(plan_id)
         torrent_items = [it for it in items if it.method == "torrent" and it.status == "pending"]
 
@@ -115,14 +125,19 @@ def run_torrent_transfer(
             section = ckey.split("/", 1)[0] if "/" in ckey else ""
             save_path = str(archive_root / section) if section else str(archive_root)
 
+            checkpoint()
+            resume_path = db_path.parent / "jobs" / f"{item.id}.resume"
+            resume_data = resume_path.read_bytes() if resume_path.exists() else None
             params = TorrentStartParams(
                 torrent_bytes=torrent_bytes,
                 save_path=save_path,
                 selected_indices=(),  # download all files
+                resume_data=resume_data,
             )
 
             try:
                 job_id = adapter.start(params)
+                active_job = job_id
             except Exception as exc:
                 log.warning("Torrent start failed for item %s: %s", item.id[:8], exc)
                 repo.update_item_status(item.id, "failed")
@@ -148,6 +163,7 @@ def run_torrent_transfer(
             stall_since: float | None = None  # when 0-peer/no-progress stall started
 
             while time.monotonic() < deadline:
+                checkpoint()
                 current_item = repo.get_item(item.id)
                 if current_item is not None and current_item.status == "paused":
                     log.info("Torrent %s: pausing per user request", item.destination_relpath)
@@ -240,12 +256,15 @@ def run_torrent_transfer(
                     stall_since = None
                     last_progress_bytes = progress.downloaded_bytes
 
-                time.sleep(_POLL_INTERVAL)
+                interruptible_sleep(_POLL_INTERVAL)
             else:
                 last_error = "transfer_timeout"
 
             with contextlib.suppress(Exception):
                 adapter.remove_keep_data(job_id)
+            active_job = None
+            if final_state == "complete":
+                resume_path.unlink(missing_ok=True)
 
             if final_state == "complete":
                 repo.update_item_status(item.id, "complete")
@@ -285,10 +304,14 @@ def run_torrent_transfer(
             for it in all_items
         )
         has_blocked = any(o.get("status") == "blocked" for o in outcomes.values())
-        if not http_pending and not has_blocked:
-            all_ok = all(o["status"] == "complete" for o in outcomes.values())
+        checkpoint()
+        unfinished = any(it.status in ("pending", "downloading", "paused", "blocked")
+                         for it in all_items)
+        if not http_pending and not has_blocked and not unfinished:
+            all_ok = all(it.status == "complete" for it in all_items)
             plan_final = "complete" if all_ok else "failed"
-            repo.update_plan_state(plan_id, plan_final)
+            if not repo.finish_if_running(plan_id, plan_final):
+                return
 
             receipt_id = str(uuid.uuid4())
             receipt_dir = db_path.parent / _RECEIPTS_DIRNAME
@@ -300,12 +323,15 @@ def run_torrent_transfer(
                     "relative_path": it.destination_relpath,
                     "method": it.method,
                     "status": outcomes.get(it.id, {}).get("status", it.status),
-                    "verification_level": outcomes.get(it.id, {}).get("verification_level"),
+                    "verification_level": outcomes.get(it.id, {}).get(
+                    "verification_level",
+                    "downloaded_unverified" if it.status == "complete" else None,
+                ),
                     "error": outcomes.get(it.id, {}).get("error"),
                     "size_bytes": it.size_bytes,
                     "fallback_reason": it.fallback_reason,
                 }
-                for it in torrent_items
+                for it in all_items
             ]
             receipt_path.write_text(json.dumps({
                 "receipt_id": receipt_id,
@@ -323,12 +349,28 @@ def run_torrent_transfer(
                 "receipt_id": receipt_id,
             })
 
+    except ServiceInterrupted:
+        log.info("Torrent plan %s interrupted; retaining resume state", plan_id)
     except Exception as exc:
         log.exception("Torrent transfer plan %s failed", plan_id)
         with contextlib.suppress(Exception):
             repo.update_plan_state(plan_id, "failed")
         broadcast({"type": "plan_status", "plan_id": plan_id, "state": "failed", "error": str(exc)})
     finally:
+        if active_job is not None:
+            try:
+                adapter.pause(active_job)
+                data = adapter.save_resume_data(active_job)
+                if resume_path is not None:
+                    resume_path.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = resume_path.with_suffix(".new")
+                    temporary.write_bytes(data)
+                    temporary.replace(resume_path)
+            except Exception:
+                log.exception("Could not save torrent resume data; retry will recheck files")
+            finally:
+                with contextlib.suppress(Exception):
+                    adapter.remove_keep_data(active_job)
         conn.close()
 
 
@@ -355,5 +397,5 @@ def start_torrent_transfer_thread(
         daemon=True,
         name=f"torrent-xfer-{plan_id[:8]}",
     )
-    t.start()
+    start_worker(t)
     return t

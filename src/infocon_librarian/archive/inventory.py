@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from infocon_librarian.domain.models import SnapshotEntry
+from infocon_librarian.service_runtime import checkpoint
 
 
 def scan(
@@ -30,6 +31,7 @@ def scan(
     stack: deque[Path] = deque([resolved_root])
 
     while stack:
+        checkpoint()
         if cancel is not None and cancel.is_set():
             return
 

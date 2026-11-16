@@ -1,5 +1,5 @@
 [build-system]
-requires = ["pip>=26.2.2", "setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -19,11 +19,13 @@ dependencies = [
 
 [project.scripts]
 infocon-librarian = "infocon_librarian.__main__:main"
+infocon-server = "infocon_librarian.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [project.optional-dependencies]
+server = ["waitress>=3.0.2,<4"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -58,3 +60,6 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "libtorrent"
 ignore_missing_imports = true
+
+[tool.setuptools.package-data]
+"infocon_librarian.web" = ["static/*", "templates/*"]

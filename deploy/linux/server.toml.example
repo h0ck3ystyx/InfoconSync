@@ -1,0 +1,15 @@
+# Replace the addresses, share source and archive ID before starting.
+host = "0.0.0.0"
+port = 8080
+allowed_hosts = ["192.168.1.50", "infocon-vm", "localhost", "127.0.0.1"]
+archive_root = "/mnt/infocon"
+mount_path = "/mnt/infocon"
+# Exact source as shown by: findmnt -n -o SOURCE --mountpoint /mnt/infocon
+mount_source = "192.168.1.10:/volume1/infocon"
+# Generate once with: /opt/infocon-librarian/current/bin/infocon-server archive-id
+archive_id = "REPLACE-WITH-GENERATED-ID"
+state_dir = "/var/lib/infocon-librarian"
+auth_file = "/var/lib/infocon-librarian/auth.json"
+torrent_listen = "0.0.0.0:6881"
+# Enable only if the browser connects over HTTPS directly to this service.
+secure_cookies = false

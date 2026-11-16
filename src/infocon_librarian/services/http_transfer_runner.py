@@ -15,7 +15,6 @@ import datetime
 import json
 import logging
 import threading
-import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +26,12 @@ import httpx
 
 from infocon_librarian.remote.client import new_http_client
 from infocon_librarian.remote.fancyindex import parse_listing
+from infocon_librarian.service_runtime import (
+    ServiceInterrupted,
+    checkpoint,
+    interruptible_sleep,
+    start_worker,
+)
 from infocon_librarian.services.pause_control import wait_while_paused
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
@@ -107,6 +112,7 @@ def _crawl_files(
     relative_path is relative to collection_url, preserving subdirectory structure.
     Only entries whose URL starts with collection_url are followed (safety invariant).
     """
+    checkpoint()
     if _depth > _MAX_CRAWL_DEPTH:
         log.warning("Crawl depth limit reached at %s", current_url)
         return []
@@ -120,6 +126,7 @@ def _crawl_files(
     entries = parse_listing(resp.text, current_url)
     results: list[tuple[str, str]] = []
     for entry in entries:
+        checkpoint()
         if not entry.url.startswith(collection_url):
             continue  # never follow links outside the collection
         rel = unquote(entry.url[len(collection_url):].lstrip("/"))
@@ -281,12 +288,13 @@ def _download_item(
     def _wait_while_paused_locked(item_id: str) -> str:
         """Like wait_while_paused, but serialises the shared connection."""
         while True:
+            checkpoint()
             with db_lock:
                 current = repo.get_item(item_id)
             status = current.status if current is not None else "failed"
             if status != "paused":
                 return status
-            time.sleep(_PAUSE_POLL_INTERVAL)
+            interruptible_sleep(_PAUSE_POLL_INTERVAL)
 
     def _log_progress_locked() -> None:
         log.info(
@@ -318,7 +326,7 @@ def _download_item(
         destination = (dest_base / rel_path).resolve()
 
         # Containment check — destination must stay inside archive root
-        if not str(destination).startswith(str(archive_root_resolved)):
+        if not destination.is_relative_to(archive_root_resolved):
             log.warning("Path escape rejected: %s", destination)
             with state_lock:
                 failed_files.append(rel_path)
@@ -393,8 +401,12 @@ def _download_item(
                 # Surface an unexpected worker crash instead of swallowing it,
                 # but keep draining the rest of the pool.
                 exc = future.exception()
+                if isinstance(exc, ServiceInterrupted):
+                    raise exc
                 if exc is not None:
-                    log.exception("HTTP worker crashed for %s: %s", item.id[:8], exc)
+                    log.error("HTTP worker crashed for %s: %s", item.id[:8], exc)
+                    with state_lock:
+                        failed_files.append("worker_error")
     finally:
         clients.close_all()
 
@@ -471,9 +483,14 @@ def run_http_transfer(
         finally:
             holder.close()
 
-        all_ok = all(o["status"] == "complete" for o in outcomes.values())
+        checkpoint()
+        all_items = repo.list_items(plan_id)
+        if any(it.status in ("pending", "downloading", "paused", "blocked") for it in all_items):
+            return
+        all_ok = all(it.status == "complete" for it in all_items)
         plan_final = "complete" if all_ok else "failed"
-        repo.update_plan_state(plan_id, plan_final)
+        if not repo.finish_if_running(plan_id, plan_final):
+            return
 
         # Write receipt
         receipt_id = str(uuid.uuid4())
@@ -487,12 +504,15 @@ def run_http_transfer(
                 "relative_path": it.destination_relpath,
                 "method": it.method,
                 "status": outcomes.get(it.id, {}).get("status", it.status),
-                "verification_level": outcomes.get(it.id, {}).get("verification_level"),
+                "verification_level": outcomes.get(it.id, {}).get(
+                "verification_level",
+                "downloaded_unverified" if it.status == "complete" else None,
+            ),
                 "error": outcomes.get(it.id, {}).get("error"),
                 "size_bytes": it.size_bytes,
                 "fallback_reason": it.fallback_reason,
             }
-            for it in https_items
+            for it in all_items
         ]
         receipt_path.write_text(json.dumps({
             "receipt_id": receipt_id,
@@ -510,6 +530,8 @@ def run_http_transfer(
             "receipt_id": receipt_id,
         })
 
+    except ServiceInterrupted:
+        log.info("HTTP plan %s interrupted; partial files retained", plan_id)
     except Exception as exc:
         log.exception("HTTP transfer plan %s failed", plan_id)
         with contextlib.suppress(Exception):
@@ -538,5 +560,5 @@ def start_http_transfer_thread(
         daemon=True,
         name=f"http-xfer-{plan_id[:8]}",
     )
-    t.start()
+    start_worker(t)
     return t

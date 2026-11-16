@@ -169,3 +169,25 @@ def test_resolve_concurrency_clamps(tmp_path: Path, stored: str | None, expected
         SettingsRepository(conn).set("http_concurrency", stored)
     assert _resolve_concurrency(conn) == expected
     conn.close()
+
+
+def test_worker_io_failure_is_not_reported_complete(tmp_path: Path, monkeypatch) -> None:
+    """NAS write errors must not produce a successful collection outcome."""
+    from infocon_librarian.services import http_transfer_runner as runner
+
+    transport = _RecordingTransport(["file.bin"])
+    conn, repo, plan, item = _make_item(tmp_path)
+
+    def fail_write(*args, **kwargs):
+        raise OSError("NAS write failed")
+
+    monkeypatch.setattr(runner, "download", fail_write)
+    with httpx.Client(transport=transport) as client:
+        outcome = _download_item(
+            item, tmp_path / "archive", SimpleNamespace(client=client), lambda _: None,
+            plan.id, repo, concurrency=1,
+            client_factory=lambda: httpx.Client(transport=transport),
+        )
+    assert outcome["status"] == "failed"
+    assert "files_failed" in outcome["error"]
+    conn.close()

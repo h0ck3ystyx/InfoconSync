@@ -1,5 +1,8 @@
 # Installation and Archive Root Selection
 
+For Linux VMs and NAS mirrors, follow [Linux VM installation](linux-vm.md).
+The instructions below cover the macOS desktop launch.
+
 ## Requirements
 
 - macOS 13 (Ventura) or later (Apple Silicon or Intel)

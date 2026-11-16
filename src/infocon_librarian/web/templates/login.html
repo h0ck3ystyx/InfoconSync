@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — InfoCon Librarian</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main>
+    <h1>InfoCon Librarian</h1>
+    <h2>Sign in</h2>
+    {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="password">Password</label>
+      <input id="password" type="password" name="password" autocomplete="current-password" required autofocus>
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>
