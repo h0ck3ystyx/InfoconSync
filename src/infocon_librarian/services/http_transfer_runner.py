@@ -214,19 +214,28 @@ class _WorkerClients:
                 client.close()
 
 
-def _is_already_complete(destination: Path) -> bool:
-    """True when a finished download already sits at *destination*.
+def _remote_file_size(client: httpx.Client, url: str) -> int | None:
+    """Directory listing sizes are rounded; HEAD supplies exact bytes when available."""
+    try:
+        response = client.head(url, headers={"Accept-Encoding": "identity"})
+        length = response.headers.get("content-length", "")
+        encoding = response.headers.get("content-encoding", "identity")
+        if response.status_code == 200 and length.isdigit() and encoding == "identity":
+            return int(length)
+    except httpx.HTTPError:
+        pass
+    return None
 
-    We only atomically rename to the final path on full completion, so a
-    non-empty final file with no ``.part`` sidecar is a completed download and
-    can be skipped when a plan is re-run or resumed.
-    """
+
+def _is_already_complete(
+    destination: Path, remote_size: int | None, *, accept_larger: bool = False,
+) -> bool:
+    """Reuse only a known size match, or an explicitly accepted larger local file."""
     part_path = destination.with_suffix(destination.suffix + ".part")
-    return (
-        destination.exists()
-        and not part_path.exists()
-        and destination.stat().st_size > 0
-    )
+    if remote_size is None or not destination.is_file() or part_path.exists():
+        return False
+    size = destination.stat().st_size
+    return size == remote_size or (accept_larger and size > remote_size)
 
 
 def _download_item(
@@ -239,6 +248,7 @@ def _download_item(
     *,
     concurrency: int,
     client_factory: Callable[[], httpx.Client] | None = None,
+    accept_larger: bool = False,
 ) -> dict[str, Any]:
     """Download all files for one plan item. Returns outcome dict.
 
@@ -334,7 +344,9 @@ def _download_item(
             return
 
         # Resume support: a completed file from a prior run is left in place.
-        if _is_already_complete(destination):
+        remote_size = (_remote_file_size(clients.get(), file_url)
+                       if destination.is_file() else None)
+        if _is_already_complete(destination, remote_size, accept_larger=accept_larger):
             clients.note_success()
             with state_lock:
                 skipped += 1
@@ -468,6 +480,9 @@ def run_http_transfer(
                 outcome = _download_item(
                     item, archive_root, holder, broadcast, plan_id, repo,
                     concurrency=concurrency,
+                    accept_larger=bool(
+                        SettingsRepository(conn).get_int("accept_larger_local_files")
+                    ),
                 )
                 outcomes[item.id] = outcome
 

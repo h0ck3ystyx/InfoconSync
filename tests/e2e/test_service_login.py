@@ -11,9 +11,9 @@ from werkzeug.serving import make_server
 from infocon_librarian.web.app import create_app
 
 
-def test_service_password_login_and_sign_out(page: Page):
+def test_service_password_login_and_sign_out(page: Page, tmp_path):
     password = "mirror browser test password"
-    app = create_app(secret_key="browser-test-secret")
+    app = create_app(secret_key="browser-test-secret", db_path=tmp_path / "state.db")
     app.config.update(
         SERVICE_AUTH={"password_hash": generate_password_hash(password)},
         TRUSTED_HOSTS=["127.0.0.1"],
@@ -32,6 +32,21 @@ def test_service_password_login_and_sign_out(page: Page):
         page.get_by_role("button", name="Sign in", exact=True).click()
         expect(page).to_have_url(base + "/")
         expect(page.get_by_role("tab", name="Collections", exact=True)).to_be_visible()
+        page.get_by_role("tab", name="Settings", exact=True).click()
+        policy = page.get_by_label("Accept larger local files", exact=True)
+        expect(policy).not_to_be_checked()
+        policy.check()
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(page.locator("#settings-save-status")).to_contain_text("Saved.")
+        page.reload()
+        page.get_by_role("tab", name="Settings", exact=True).click()
+        expect(policy).to_be_checked()
+        policy.uncheck()
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(page.locator("#settings-save-status")).to_contain_text("Saved.")
+        page.reload()
+        page.get_by_role("tab", name="Settings", exact=True).click()
+        expect(policy).not_to_be_checked()
         page.get_by_role("button", name="Sign out", exact=True).click()
         expect(page).to_have_url(base + "/login")
         assert page.request.get(base + "/api/health").status == 401

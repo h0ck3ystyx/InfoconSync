@@ -191,3 +191,49 @@ def test_worker_io_failure_is_not_reported_complete(tmp_path: Path, monkeypatch)
     assert outcome["status"] == "failed"
     assert "files_failed" in outcome["error"]
     conn.close()
+
+
+@pytest.mark.parametrize("accept_larger", [False, True])
+@pytest.mark.parametrize("local_size", [4, 8, 12])
+def test_existing_files_are_compared_to_exact_remote_size(tmp_path, local_size, accept_larger):
+    remote = b"remote!!"
+    gets = []
+
+    def handle(request):
+        if request.method == "HEAD":
+            if request.url.path.endswith("talk.mp4"):
+                assert request.headers["accept-encoding"] == "identity"
+                return httpx.Response(200, headers={"Content-Length": str(len(remote))})
+            return httpx.Response(404)
+        if request.url.path.endswith("/"):
+            return httpx.Response(
+                200, text='<table><tr><td><a href="talk.mp4">talk</a></td></tr></table>'
+            )
+        gets.append(request.url.path)
+        return httpx.Response(200, content=remote)
+
+    transport = httpx.MockTransport(handle)
+    conn, repo, plan, item = _make_item(tmp_path)
+    destination = tmp_path / "archive/defcon/testcol/talk.mp4"
+    destination.parent.mkdir(parents=True)
+    original = b"x" * local_size
+    destination.write_bytes(original)
+    with httpx.Client(transport=transport) as client:
+        outcome = _download_item(
+            item, tmp_path / "archive", SimpleNamespace(client=client), lambda _: None,
+            plan.id, repo, concurrency=1, accept_larger=accept_larger,
+            client_factory=lambda: httpx.Client(transport=transport),
+        )
+    assert outcome["status"] == "complete"
+    skipped = local_size == len(remote) or (accept_larger and local_size > len(remote))
+    assert destination.read_bytes() == (original if skipped else remote)
+    assert len(gets) == (0 if skipped else 1)
+    conn.close()
+
+
+@pytest.mark.parametrize("accept_larger", [False, True])
+def test_unknown_remote_size_never_accepts_existing_file(tmp_path, accept_larger):
+    from infocon_librarian.services.http_transfer_runner import _is_already_complete
+    file = tmp_path / "talk.mp4"
+    file.write_bytes(b"original")
+    assert not _is_already_complete(file, None, accept_larger=accept_larger)

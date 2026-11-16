@@ -204,6 +204,7 @@ def get_latest_check() -> Response:
         return jsonify({"error": "not_found"}), 404
 
     results = _json.loads(record.result_json) if record.result_json else []
+    _apply_file_size_policy(results, db)
     return jsonify({
         "check_id": record.id,
         "state": record.state,
@@ -236,6 +237,7 @@ def get_check(check_id: str) -> Response:
         return jsonify({"error": "not_found"}), 404
 
     results = _json.loads(record.result_json) if record.result_json else []
+    _apply_file_size_policy(results, db)
     return jsonify({
         "check_id": record.id,
         "state": record.state,
@@ -870,6 +872,7 @@ _ALLOWED_SETTINGS = {
     "torrent_download_limit",
     "torrent_upload_limit",
     "http_concurrency",
+    "accept_larger_local_files",
 }
 
 
@@ -891,7 +894,7 @@ def get_settings() -> Response:
 @api_bp.route("/settings", methods=["PUT"])
 @require_session
 @require_csrf
-def put_settings() -> Response:
+def put_settings() -> Response | tuple[Response, int]:
     db = getattr(g, "db", None)
     if db is None:
         return jsonify({"error": "not_configured"}), 503
@@ -905,6 +908,11 @@ def put_settings() -> Response:
     for key in _ALLOWED_SETTINGS:
         if key not in body:
             continue
+        if key == "accept_larger_local_files":
+            value = body[key]
+            if not ((type(value) is int and value in (0, 1))
+                    or (type(value) is str and value in ("0", "1"))):
+                return jsonify({"error": "invalid_value", "key": key}), 400
         try:
             val = int(body[key])
         except (TypeError, ValueError):
@@ -945,3 +953,17 @@ def _is_valid_uuid(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _apply_file_size_policy(results: list[dict[str, Any]], db: Any) -> None:
+    """Old legacy classifications are not valid evidence under the strict default."""
+    from infocon_librarian.storage.settings_repository import SettingsRepository
+
+    if SettingsRepository(db).get_int("accept_larger_local_files"):
+        return
+    for item in results:
+        if item.get("status") == "has_older_version":
+            item["status"] = "changed_manifest"
+        verification = item.get("verify_result")
+        if verification and verification.get("level") == "has_older_version":
+            verification["level"] = "unverified"

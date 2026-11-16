@@ -144,6 +144,16 @@
         <div class="card">
           <h2>Archive</h2>
           <div class="setting-row">
+            <label for="setting-accept-larger">Accept larger local files</label>
+            <div class="setting-control">
+              <input type="checkbox" id="setting-accept-larger">
+              <p class="setting-hint">Off by default: local file sizes must match the remote files.
+                Enable to accept larger files with the same name as legacy video encodings.
+                Smaller or missing files still need updating. Run Check after changing this setting.
+                Torrent transfers still verify content against the published torrent.</p>
+            </div>
+          </div>
+          <div class="setting-row">
             <label>Location</label>
             <div class="setting-control">
               <code id="setting-archive-root" class="archive-root-display">—</code>

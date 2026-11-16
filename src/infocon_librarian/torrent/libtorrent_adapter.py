@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import libtorrent as lt  # type: ignore[import]
 
@@ -138,6 +139,7 @@ class LibtorrentAdapter:
         self._handles: dict[str, lt.torrent_handle] = {}
         self._lock = threading.Lock()
         self._resume_lock = threading.Lock()
+        self._expected_files: dict[str, tuple[Path, tuple[TorrentFile, ...]]] = {}
 
     def set_rate_limits(self, *, download_kbps: int, upload_kbps: int) -> None:
         """Apply torrent-session rate limits (0 = unlimited). Takes effect immediately."""
@@ -179,6 +181,15 @@ class LibtorrentAdapter:
             ti = lt.torrent_info(params.torrent_bytes)
         except Exception as exc:
             raise InvalidTorrent(f"Failed to parse torrent on start: {exc}") from exc
+
+        manifest = _parse_manifest(ti, "")
+        _validate_manifest_paths(manifest)
+        root = Path(params.save_path).resolve()
+        selected = tuple(f for f in manifest.files
+                         if not params.selected_indices or f.index in params.selected_indices)
+        for file in selected:
+            if not (root / file.relative_path).resolve().is_relative_to(root):
+                raise InvalidTorrent("Torrent destination escapes archive via symlink")
 
         atp = lt.add_torrent_params()
         atp.ti = ti
@@ -230,6 +241,7 @@ class LibtorrentAdapter:
         job_id = EngineJobId()
         with self._lock:
             self._handles[job_id.value] = handle
+            self._expected_files[job_id.value] = (root, selected)
         return job_id
 
     def pause(self, job_id: EngineJobId) -> None:
@@ -245,6 +257,7 @@ class LibtorrentAdapter:
         self._session.remove_torrent(handle)
         with self._lock:
             del self._handles[job_id.value]
+            self._expected_files.pop(job_id.value, None)
 
     def recheck(self, job_id: EngineJobId) -> None:
         handle = self._get_handle(job_id)
@@ -255,6 +268,21 @@ class LibtorrentAdapter:
         handle = self._get_handle(job_id)
         ts = handle.status()
         state = _state_to_transfer_state(ts)
+        if state == TransferState.COMPLETE:
+            # libtorrent verifies the declared pieces but can leave a larger
+            # existing file's trailing bytes intact. Publish exact lengths only
+            # after successful piece completion, never before a transfer starts.
+            with self._lock:
+                expected = self._expected_files.get(job_id.value)
+            if expected is not None:
+                root, files = expected
+                for file in files:
+                    local = (root / file.relative_path).resolve()
+                    if not local.is_relative_to(root):
+                        raise TransferError("Torrent destination escaped archive via symlink")
+                    if local.is_file() and local.stat().st_size > file.size:
+                        with local.open("r+b") as fh:
+                            fh.truncate(file.size)
         error = ts.errc.message() if ts.errc else None
         return TransferProgress(
             job_id=job_id,

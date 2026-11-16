@@ -30,6 +30,7 @@ from infocon_librarian.remote.client import RemoteClient, RemoteFetchError
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
 from infocon_librarian.storage.repositories import VerificationRepository
+from infocon_librarian.storage.settings_repository import SettingsRepository
 
 log = logging.getLogger(__name__)
 
@@ -45,18 +46,18 @@ def manifest_check(
     section: str,
     archive_root: Path,
     adapter: TorrentAdapter,
+    accept_larger_local_files: bool = False,
 ) -> tuple[str, str | None, dict]:
     """Stat each file in the torrent manifest. Returns (level, error_summary, details).
 
     Distinguishes three size-mismatch cases:
-    - local > expected: file is larger than the torrent declares — characteristic of
-      pre-re-encoding originals (v1 content when torrent is v2).  Not corruption.
+    - local > expected: may be an older encoding; accepted only when opted in.
     - local < expected: file is smaller than declared — truncated or wrong file.
     - missing: file absent entirely.
 
-    Returns 'has_older_version' when files are all present and only the
-    larger-than-expected mismatch is found.  Returns 'unverified' for any missing
-    or truncated files.
+    By default every size mismatch is unverified. Opting into larger local files
+    classifies a collection with only larger mismatches as has_older_version.
+    Missing and shorter files remain unverified in both modes.
     """
     manifest = adapter.inspect(torrent_bytes)
     save_root = archive_root / section
@@ -119,7 +120,7 @@ def manifest_check(
         return "manifest_verified", None, details
 
     # All files present, only larger-than-expected mismatches → older version
-    if not missing and not size_smaller and size_larger:
+    if accept_larger_local_files and not missing and not size_smaller and size_larger:
         summary = f"{len(size_larger)} file(s) are larger than the current torrent expects"
         return "has_older_version", summary, details
 
@@ -190,6 +191,9 @@ def run_verify(
             section=section,
             archive_root=archive_root,
             adapter=adapter,
+            accept_larger_local_files=bool(
+                SettingsRepository(conn).get_int("accept_larger_local_files")
+            ),
         )
 
         verify_repo.create(

@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 
 _DEFAULTS: dict[str, str] = {
+    "accept_larger_local_files": "0",
     "torrent_stall_timeout": "300",
     "torrent_download_limit": "0",
     "torrent_upload_limit": "0",

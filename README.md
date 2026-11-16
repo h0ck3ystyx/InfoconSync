@@ -86,6 +86,22 @@ infocon-librarian receipts list
 infocon-librarian receipts export RECEIPT_ID
 ```
 
+## Matching existing files
+
+By default local file sizes must match the upstream manifest or exact HTTP
+Content-Length. Larger local videos are treated as needing an update, rather
+than automatically accepted as older encodings. Missing and smaller files also
+need updating.
+
+To retain the previous treatment of larger videos, enable **Settings → Archive →
+Accept larger local files**, save, then run Check again. This classifies collections
+with only larger size mismatches as Legacy and lets HTTPS transfers keep those
+files. Unknown HTTP sizes are downloaded again. Equal file sizes alone do not
+prove identical content; torrent transfers still verify published piece hashes
+and produce files at the declared lengths, including when explicitly started for
+a Legacy collection. The setting applies to subsequent checks/verifications and
+transfers; it does not rewrite existing receipts or completed plans.
+
 ## Privacy
 
 Before every torrent transfer the UI shows:

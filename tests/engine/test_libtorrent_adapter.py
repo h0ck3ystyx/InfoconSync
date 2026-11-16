@@ -408,3 +408,21 @@ def _wait_for_nonzero_progress(adapter: LibtorrentAdapter, job_id, timeout: floa
         if prog.state == TransferState.COMPLETE:
             return
         time.sleep(0.1)
+
+
+def test_completed_torrent_removes_trailing_bytes_from_existing_file(tmp_path: Path) -> None:
+    """Valid pieces plus an oversized tail must result in the exact remote length."""
+    info = HASHES["single_file_v1"]
+    _write_fixture_data(tmp_path, info["files"])
+    path = tmp_path / info["files"][0]["path"]
+    original = path.read_bytes()
+    with path.open("ab") as fh:
+        fh.write(b"old encoding trailing data")
+    adapter = LibtorrentAdapter()
+    try:
+        job = adapter.start(TorrentStartParams(fixture_bytes("single_file_v1"), str(tmp_path), ()))
+        wait_for_state(adapter, job, {TransferState.COMPLETE}, timeout=10)
+        assert path.read_bytes() == original
+        adapter.remove_keep_data(job)
+    finally:
+        adapter.close()

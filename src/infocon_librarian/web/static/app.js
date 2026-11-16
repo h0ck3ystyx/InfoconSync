@@ -99,7 +99,7 @@
       'changed_manifest':  'File path or size differs from the torrent manifest',
       'verified_current':  'Piece-checked against the current torrent — fully verified',
       'manifest_verified': 'All files present with correct sizes per the torrent manifest',
-      'has_older_version': 'Files are present but are larger than the current torrent expects — likely pre-re-encoding originals (v1 content). Content is probably still valid.',
+      'has_older_version': 'Larger local files are accepted by the Archive setting. They may be earlier video encodings and do not match the current remote sizes.',
       'present_unverified':'Files are present locally but have not been verified against a manifest',
       'local_only':        'No upstream counterpart found — will never be auto-deleted',
       'unknown':           'Not enough upstream evidence to classify cheaply',
@@ -1188,6 +1188,7 @@
         document.getElementById('setting-dl-limit').value = data.torrent_download_limit ?? 0;
         document.getElementById('setting-ul-limit').value = data.torrent_upload_limit ?? 0;
         document.getElementById('setting-http-concurrency').value = data.http_concurrency ?? 4;
+        document.getElementById('setting-accept-larger').checked = data.accept_larger_local_files === '1';
         document.getElementById('setting-archive-root').textContent = data.archive_root || '—';
       });
     }
@@ -1200,12 +1201,13 @@
       const statusEl = document.getElementById('settings-save-status');
 
       api('PUT', '/settings', {
+        accept_larger_local_files: document.getElementById('setting-accept-larger').checked ? 1 : 0,
         torrent_stall_timeout: isNaN(timeout) ? 300 : Math.max(0, timeout),
         torrent_download_limit: isNaN(dl) ? 0 : Math.max(0, dl),
         torrent_upload_limit: isNaN(ul) ? 0 : Math.max(0, ul),
         http_concurrency: isNaN(conc) ? 4 : Math.min(8, Math.max(1, conc)),
       }).then(({ ok }) => {
-        statusEl.textContent = ok ? 'Saved.' : 'Save failed.';
+        statusEl.textContent = ok ? 'Saved. Run Check to refresh collection status.' : 'Save failed.';
         statusEl.className = 'settings-status ' + (ok ? 'settings-ok' : 'settings-err');
         setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'settings-status'; }, 2500);
       });

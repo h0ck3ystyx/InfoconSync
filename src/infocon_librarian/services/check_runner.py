@@ -35,6 +35,7 @@ from infocon_librarian.storage.repositories import (
     CheckRepository,
     VerificationRepository,
 )
+from infocon_librarian.storage.settings_repository import SettingsRepository
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +96,7 @@ def run_check(
     conn = open_db(db_path)
     migrate(conn)
     check_repo = CheckRepository(conn)
+    accept_larger = bool(SettingsRepository(conn).get_int("accept_larger_local_files"))
 
     try:
         # Resolve which sections to scan
@@ -195,10 +197,10 @@ def run_check(
                 if rec is not None:
                     if rec.level in ("manifest_verified", "piece_verified"):
                         item["status"] = "verified_current"
-                        item["verify_result"] = {"level": rec.level, "error": rec.error}
-                    elif rec.level == "has_older_version":
+                        item["verify_result"] = _stored_result(rec, accept_larger)
+                    elif rec.level == "has_older_version" and accept_larger:
                         item["status"] = "has_older_version"
-                        item["verify_result"] = {"level": rec.level, "error": rec.error}
+                        item["verify_result"] = _stored_result(rec, accept_larger)
                     else:
                         # unverified — set status but still re-verify to get full
                         # file details for the UI (stored record only has level+error)
@@ -207,7 +209,7 @@ def run_check(
                         if torrent_url:
                             to_verify.append((item, ckey, torrent_url))
                         else:
-                            item["verify_result"] = {"level": rec.level, "error": rec.error}
+                            item["verify_result"] = _stored_result(rec, accept_larger)
                 else:
                     torrent_url = _find_torrent_url(item.get("evidence", []))
                     if torrent_url:
@@ -221,7 +223,7 @@ def run_check(
                 ckey = f"{item['section']}/{item['key']}"
                 rec = existing.get(ckey)
                 if rec is not None:
-                    item["verify_result"] = {"level": rec.level, "error": rec.error}
+                    item["verify_result"] = _stored_result(rec, accept_larger)
 
             # Pass 2: fresh manifest check for collections with no stored result
             if to_verify and adapter is not None:
@@ -256,6 +258,7 @@ def run_check(
                                 section=item["section"],
                                 archive_root=archive_root,
                                 adapter=adapter,
+                                accept_larger_local_files=accept_larger,
                             )
                             verify_repo.create(
                                 str(uuid.uuid4()),
@@ -344,3 +347,10 @@ def start_check_thread(
     )
     start_worker(t)
     return t
+
+
+def _stored_result(record: Any, accept_larger: bool) -> dict[str, Any]:
+    level = record.level
+    if level == "has_older_version" and not accept_larger:
+        level = "unverified"
+    return {"level": level, "error": record.error}
