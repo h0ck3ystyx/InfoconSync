@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=84.2.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -28,11 +28,11 @@ where = ["src"]
 server = ["waitress>=3.0.2,<4"]
 dev = [
     "pytest>=8.0",
-    "pytest-cov>=5.0",
+    "pytest-cov>=7.1.0",
     "pytest-asyncio>=0.23",
-    "pytest-timeout>=2.3",
-    "ruff>=0.4",
-    "mypy>=1.10",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.17.1",
+    "mypy>=2.4.1",
     "playwright>=1.44",
     "pytest-playwright>=0.5",
 ]
