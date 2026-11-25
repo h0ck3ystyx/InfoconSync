@@ -201,6 +201,11 @@ class _IndexMarkup(HTMLParser):
 def directory_entries(client: httpx.Client, url: str) -> list[tuple[str, str, bool]]:
     """Read immediate children from a recognized directory index."""
     html = read_limited(client, url).decode("utf-8", errors="replace")
+    return parse_directory_entries(html, url)
+
+
+def parse_directory_entries(html: str, url: str) -> list[tuple[str, str, bool]]:
+    """Parse immediate children from a recognized directory index."""
     markup = _IndexMarkup()
     markup.feed(html)
     apache = re.search(r"<(?:title|h1)>\s*Index of\s", html, re.IGNORECASE)

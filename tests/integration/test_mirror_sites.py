@@ -351,3 +351,55 @@ def test_file_preview_reports_pending_changes_without_transferring(app_session, 
     with contextlib.closing(open_db(db_path)) as db:
         assert db.execute("SELECT state FROM plans").fetchone()["state"] == "draft"
         assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 0
+
+
+def test_infocon_check_discovers_sections_on_empty_archive(app_session, monkeypatch):
+    from types import SimpleNamespace
+
+    from infocon_librarian.services import check_runner
+
+    client, headers, root, _ = app_session
+    requested = []
+
+    def fetch(url):
+        requested.append(url)
+        if url == "https://infocon.org/":
+            return SimpleNamespace(
+                status_code=200,
+                body=listing("cons/", "word%20lists/", "unavailable/", "DefconMedia/").encode(),
+            )
+        if url.endswith("/cons/"):
+            return SimpleNamespace(
+                status_code=200,
+                body=b'<table><tr><td><a href="A%20Conference/">A Conference/</a>'
+                     b'</td></tr></table>',
+            )
+        if url.endswith("/word%20lists/"):
+            return SimpleNamespace(status_code=200, body=listing("Example/").encode())
+        if url.endswith("/unavailable/"):
+            return SimpleNamespace(status_code=403, body=b"")
+        raise AssertionError(f"Unexpected URL {url}")
+
+    monkeypatch.setattr(
+        check_runner, "RemoteClient", lambda: contextlib.nullcontext(SimpleNamespace(fetch=fetch)),
+    )
+    monkeypatch.setattr(check_runner, "start_check_thread", check_runner.run_check)
+
+    assert not list(root.iterdir())
+    response = client.post("/api/checks", json={"site_id": "infocon"}, headers=headers)
+    assert response.status_code == 202
+    data = client.get("/api/checks/latest?site_id=infocon").json
+    assert data["state"] == "complete"
+    assert {(row["section"], row["key"], row["status"]) for row in data["results"]} == {
+        ("cons", "A Conference", "new"),
+        ("word lists", "Example", "new"),
+        ("unavailable", "unavailable", "unknown"),
+    }
+    failure = next(row for row in data["results"] if row["section"] == "unavailable")
+    assert failure["selectable"] is False
+    assert "HTTP 403" in failure["error"]
+    assert requested == [
+        "https://infocon.org/", "https://infocon.org/cons/", "https://infocon.org/unavailable/",
+        "https://infocon.org/word%20lists/",
+    ]
+    assert not list(root.iterdir())

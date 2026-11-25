@@ -468,7 +468,10 @@
       const prog = document.getElementById('check-progress-el');
       if (!bar) return;
       bar.hidden = false;
-      if (ev.phase === 'fetch') {
+      if (ev.phase === 'discover') {
+        if (label) label.textContent = 'Discovering InfoCon sections…';
+        if (prog) prog.removeAttribute('value');
+      } else if (ev.phase === 'fetch') {
         if (label) label.textContent = `Checking ${ev.section}… (${ev.current}/${ev.total})`;
         if (prog) prog.removeAttribute('value');
       } else if (ev.phase === 'verify') {

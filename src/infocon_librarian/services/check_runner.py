@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 from infocon_librarian.remote.client import RemoteClient, RemoteFetchError
 from infocon_librarian.remote.fancyindex import parse_listing
-from infocon_librarian.remote.mirror import managed_sections, name_key
+from infocon_librarian.remote.mirror import managed_sections, name_key, parse_directory_entries
 from infocon_librarian.services.check_service import check_collections
 from infocon_librarian.services.verify_runner import manifest_check
 from infocon_librarian.storage.database import open_db
@@ -67,7 +67,7 @@ def _local_top_dirs(section_path: Path) -> set[str]:
 
 
 def _section_url(base_url: str, section: str) -> str:
-    return base_url.rstrip("/") + "/" + section.rstrip("/") + "/"
+    return base_url.rstrip("/") + "/" + quote(section, safe="") + "/"
 
 
 def _find_torrent_url(evidence: list[dict]) -> str | None:
@@ -101,27 +101,41 @@ def run_check(
     accept_larger = bool(SettingsRepository(conn).get_int("accept_larger_local_files"))
 
     try:
-        # Resolve which sections to scan
         root_path = archive_root.resolve()
-        if section:
-            sections_to_scan = [section]
-        else:
-            managed = managed_sections(conn, root_path, default_root)
-            # Every non-hidden, non-skip top-level directory
-            sections_to_scan = sorted(
-                name
-                for name in _local_top_dirs(root_path)
-                if name not in _SKIP_DIRS and not name.startswith(".")
-                and name_key(name) not in managed
-            )
-
-        log.info("Check %s: scanning sections %s", check_id, sections_to_scan)
-
         all_results: list[dict[str, Any]] = []
-        total_sections = len(sections_to_scan)
-
         with RemoteClient() as client:
-            for sec_idx, sec in enumerate(sections_to_scan, 1):
+            if section:
+                sections: dict[str, str | None] = {section: _section_url(base_url, section)}
+            else:
+                broadcast({
+                    "type": "check_progress", "check_id": check_id, "phase": "discover",
+                })
+                listing_url = base_url.rstrip("/") + "/"
+                root_listing = client.fetch(listing_url)
+                if root_listing.status_code != 200:
+                    raise ValueError(
+                        f"InfoCon directory index returned HTTP {root_listing.status_code}."
+                    )
+                html = root_listing.body.decode("utf-8", errors="replace")
+                managed = managed_sections(conn, root_path, default_root)
+
+                def eligible(name: str) -> bool:
+                    return (
+                        name not in _SKIP_DIRS and not name.startswith(".")
+                        and name_key(name) not in managed
+                    )
+
+                sections = {
+                    name: url for name, url, is_dir in parse_directory_entries(html, listing_url)
+                    if is_dir and eligible(name)
+                }
+                remote_keys = {name_key(name) for name in sections}
+                for name in _local_top_dirs(root_path):
+                    if eligible(name) and name_key(name) not in remote_keys:
+                        sections[name] = None
+
+            log.info("Check %s: scanning sections %s", check_id, sorted(sections))
+            for sec_idx, (sec, url) in enumerate(sorted(sections.items()), 1):
                 checkpoint()
                 broadcast({
                     "type": "check_progress",
@@ -129,23 +143,19 @@ def run_check(
                     "phase": "fetch",
                     "section": sec,
                     "current": sec_idx,
-                    "total": total_sections,
+                    "total": len(sections),
                 })
                 sec_path = root_path / sec
-                url = _section_url(base_url, sec)
-                log.info("Check %s: fetching %s", check_id, url)
-
                 try:
-                    result = client.fetch(url)
-                    if result.status_code not in (200, 304):
-                        log.warning(
-                            "Check %s: %s returned %d, skipping",
-                            check_id, url, result.status_code,
-                        )
-                        continue
-
-                    html = result.body.decode("utf-8", errors="replace")
-                    entries = parse_listing(html, url)
+                    entries = []
+                    if url is not None:
+                        result = client.fetch(url)
+                        if result.status_code != 200:
+                            raise RemoteFetchError(
+                                f"Directory listing returned HTTP {result.status_code}."
+                            )
+                        html = result.body.decode("utf-8", errors="replace")
+                        entries = parse_listing(html, url)
                     local_dirs = _local_top_dirs(sec_path)
 
                     check_results = check_collections(
@@ -178,6 +188,7 @@ def run_check(
                         "status": "unknown",
                         "display_name": sec,
                         "error": str(exc),
+                        "selectable": False,
                         "evidence": [],
                     })
 
