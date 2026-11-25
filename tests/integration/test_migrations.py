@@ -174,9 +174,20 @@ def test_v6_migrating_existing_receipts_preserves_rows(tmp_path: Path) -> None:
         conn.commit()
 
     root = ArchiveRootRepository(conn).upsert("/mnt/archive", "dev:1234")
-    repo = PlanRepository(conn)
-    plan = repo.create_plan(root.id)
-    receipt = repo.add_receipt(plan.id, "/fake/receipt.json")
+    # Seed historical tables using their v5 columns.
+    conn.execute(
+        "INSERT INTO plans VALUES (?, ?, 'complete', '2024-01-01')", ("old-plan", root.id),
+    )
+    conn.execute(
+        "INSERT INTO receipts VALUES "
+        "('old-receipt', 'old-plan', '/fake/receipt.json', '2024-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO checks (id, archive_root_id, state, started_at, completed_at, result_json)"
+        " VALUES ('old-check', ?, 'complete', '2024-01-01', '2024-01-01', '[]')",
+        (root.id,),
+    )
+    conn.commit()
     conn.close()
 
     # Reopen and migrate the rest of the way to latest.
@@ -185,12 +196,15 @@ def test_v6_migrating_existing_receipts_preserves_rows(tmp_path: Path) -> None:
     assert version == latest_version()
 
     repo2 = PlanRepository(conn2)
-    found = repo2.get_receipt(receipt.id)
+    found = repo2.get_receipt("old-receipt")
     assert found is not None
-    assert found.plan_id == plan.id
+    assert found.plan_id == "old-plan"
     assert found.json_path == "/fake/receipt.json"
+    assert repo2.get_plan("old-plan").site_id == "infocon"
+    check = conn2.execute("SELECT site_id FROM checks WHERE id='old-check'").fetchone()
+    assert check["site_id"] == "infocon"
 
     # And the FK is now gone — deleting the plan no longer breaks.
-    repo2.delete_plan(plan.id)
-    assert repo2.get_receipt(receipt.id) is not None
+    repo2.delete_plan("old-plan")
+    assert repo2.get_receipt("old-receipt") is not None
     conn2.close()

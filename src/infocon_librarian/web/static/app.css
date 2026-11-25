@@ -245,6 +245,19 @@
     .plan-detail-meta { font-size: .82rem; color: #777; }
     .plan-items-table td { vertical-align: middle; }
     .item-actions { white-space: nowrap; }
+    .plan-file-preview { margin: .75rem 0 1rem; }
+    .preview-controls {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: .5rem;
+      margin: .5rem 0;
+    }
+    .preview-controls select { max-width: 100%; }
+    .preview-table-wrap { max-height: 28rem; overflow: auto; }
+    .preview-table-wrap th { position: sticky; top: 0; }
+    .preview-table-wrap td:first-child { overflow-wrap: anywhere; }
+
     .plan-actions { display: flex; gap: .5rem; margin-top: 1rem; }
 
     .method-badge {

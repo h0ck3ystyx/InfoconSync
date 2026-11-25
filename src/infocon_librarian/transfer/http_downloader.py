@@ -97,6 +97,7 @@ def download(
     timeout: float = 60.0,
     max_retries: int = 5,
     retry_delay_base: float = 1.0,
+    part_path: Path | None = None,
 ) -> DownloadResult:
     """Download *url* to *destination*, resuming if a .part sidecar exists.
 
@@ -112,6 +113,8 @@ def download(
             rather than starting over. Non-transient failures (404, quarantine)
             return immediately.
         retry_delay_base: Base seconds for exponential backoff between attempts.
+        part_path: Optional dedicated staging file for mirrors. When supplied the
+            downloader preserves the raw response bytes.
 
     Returns:
         DownloadResult with state COMPLETE, QUARANTINED, or FAILED.
@@ -120,7 +123,7 @@ def download(
     client = http_client or new_http_client(timeout=timeout)
 
     try:
-        result = _download(url, destination, client=client, progress=progress)
+        result = _download(url, destination, client=client, progress=progress, part_path=part_path)
         attempt = 1
         while (
             result.state == DownloadState.FAILED
@@ -134,7 +137,9 @@ def download(
             )
             interruptible_sleep(delay)
             attempt += 1
-            result = _download(url, destination, client=client, progress=progress)
+            result = _download(
+                url, destination, client=client, progress=progress, part_path=part_path,
+            )
         return result
     finally:
         if own_client:
@@ -159,23 +164,32 @@ def _download(
     *,
     client: httpx.Client,
     progress: ProgressCallback | None,
+    part_path: Path | None = None,
 ) -> DownloadResult:
     checkpoint()
-    part_path = destination.with_suffix(destination.suffix + ".part")
+    raw_download = part_path is not None
+    part_path = part_path or destination.with_suffix(destination.suffix + ".part")
     meta_path = Path(str(part_path) + ".meta")
 
     sidecar: _Sidecar | None = None
     if meta_path.exists() and part_path.exists():
         try:
             sidecar = _Sidecar.from_lines(meta_path.read_text())
+            if raw_download and (
+                not (sidecar.last_modified or (sidecar.etag and not sidecar.etag.startswith("W/")))
+                or part_path.stat().st_size < sidecar.bytes_written
+            ):
+                sidecar = None
         except Exception:
             sidecar = None
 
     # Build request — try Range if sidecar is valid
     headers: dict[str, str] = {}
+    if raw_download:
+        headers["Accept-Encoding"] = "identity"
     if sidecar is not None and sidecar.bytes_written > 0:
         headers["Range"] = f"bytes={sidecar.bytes_written}-"
-        if sidecar.etag:
+        if sidecar.etag and not sidecar.etag.startswith("W/"):
             headers["If-Range"] = sidecar.etag
         elif sidecar.last_modified:
             headers["If-Range"] = sidecar.last_modified
@@ -218,6 +232,12 @@ def _download(
             if sidecar and resp.status_code == 206:
                 total = _parse_range_total(resp.headers.get("content-range", ""))
 
+            if raw_download and resp.status_code == 206 and (sidecar is None or total is None):
+                return DownloadResult(
+                    state=DownloadState.FAILED, destination=None, downloaded_bytes=0,
+                    total_bytes=None, error="unexpected_partial_response",
+                )
+
             # Record ETag / Last-Modified for future resume
             etag = resp.headers.get("etag") or (sidecar.etag if sidecar else None)
             last_modified = resp.headers.get("last-modified") or (
@@ -229,6 +249,8 @@ def _download(
 
             checkpoint()
             destination.parent.mkdir(parents=True, exist_ok=True)
+            if raw_download:
+                part_path.parent.mkdir(parents=True, exist_ok=True)
             if append and part_path.exists() and part_path.stat().st_size > bytes_so_far:
                 # A prior attempt may have written a chunk to .part but crashed
                 # before recording it in the sidecar. Trust the sidecar (which the
@@ -239,7 +261,11 @@ def _download(
             mode = "ab" if append else "wb"
             last_meta_flush = bytes_so_far
             with open(part_path, mode) as fh:
-                for chunk in resp.iter_bytes(chunk_size=_CHUNK):
+                chunks = (
+                    resp.iter_raw(chunk_size=_CHUNK) if raw_download
+                    else resp.iter_bytes(chunk_size=_CHUNK)
+                )
+                for chunk in chunks:
                     checkpoint()
                     fh.write(chunk)
                     bytes_so_far += len(chunk)
@@ -258,6 +284,12 @@ def _download(
                         last_meta_flush = bytes_so_far
                     if progress:
                         progress(bytes_so_far, total)
+
+        if raw_download and total is not None and bytes_so_far != total:
+            return DownloadResult(
+                state=DownloadState.FAILED, destination=None, downloaded_bytes=bytes_so_far,
+                total_bytes=total, error="network_error:incomplete response body",
+            )
 
         # Atomic rename
         checkpoint()

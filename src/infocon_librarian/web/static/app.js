@@ -96,7 +96,7 @@
     const _badgeTip = {
       'new':               'No local copy exists — not yet downloaded',
       'changed_marker':    'A newer torrent marker exists upstream — needs re-download',
-      'changed_manifest':  'File path or size differs from the torrent manifest',
+      'changed_manifest':  'File path or size differs from the upstream listing or manifest',
       'verified_current':  'Piece-checked against the current torrent — fully verified',
       'manifest_verified': 'All files present with correct sizes per the torrent manifest',
       'has_older_version': 'Larger local files are accepted by the Archive setting. They may be earlier video encodings and do not match the current remote sizes.',
@@ -236,6 +236,10 @@
     function _spaceEstimateHtml(space) {
       if (!space || space.free_bytes == null) return '';
       const cls = space.sufficient ? 'space-notice' : 'space-notice space-notice-warn';
+      if (space.sufficient && space.unknown_size_items) {
+        return `<div class="${cls}">Transfer size is unknown for ${space.unknown_size_items} item(s). ` +
+          `${fmt(space.free_bytes)} free on the archive volume.</div>`;
+      }
       if (space.sufficient) {
         return `<div class="${cls}">` +
           `Estimated space needed: ${fmt(space.bytes_needed)} — ` +
@@ -315,13 +319,6 @@
     refreshHealth();
     setInterval(refreshHealth, 15000);
 
-    // Load the last completed check on startup so collections are visible immediately
-    api('GET', '/checks/latest').then(({ ok, data }) => {
-      if (ok && data.results && data.results.length) {
-        renderCollections(data.results);
-      }
-    });
-
     // ---- SSE ----
     let evtSource = null;
     function connectSSE() {
@@ -338,17 +335,9 @@
     }
 
     function handleSSEEvent(ev) {
-      if (ev.type === 'check_complete') {
-        stopCheckPoll();
-        hideCheckProgress();
-        loadCheck(ev.check_id);
-      } else if (ev.type === 'check_failed') {
-        stopCheckPoll();
-        hideCheckProgress();
-        const btn = document.getElementById('btn-check-now');
-        btn.disabled = false;
-        btn.textContent = 'Check infocon.org';
-        announce('Check failed: ' + (ev.error || 'unknown error'));
+      if (ev.type === 'check_complete' || ev.type === 'check_failed') {
+        const siteId = ev.site_id || 'infocon';
+        if (runningChecks.get(siteId) === ev.check_id) fetchCheck(siteId, ev.check_id).catch(() => {});
       } else if (ev.type === 'plan_created') {
         // Refresh plans list if tab is active
         if (document.getElementById('btn-plans').getAttribute('aria-selected') === 'true') {
@@ -360,10 +349,13 @@
           loadTransfers();
         }
       } else if (ev.type === 'check_progress') {
-        updateCheckProgress(ev);
-      } else if (ev.type === 'verify_complete') {
+        const siteId = ev.site_id || 'infocon';
+        if (siteId === mirrorPicker.value && runningChecks.get(siteId) === ev.check_id) {
+          updateCheckProgress(ev);
+        }
+      } else if (ev.type === 'verify_complete' && mirrorPicker.value === 'infocon') {
         onVerifyFinished(ev.collection_key, ev.level, ev.error, ev.details || {});
-      } else if (ev.type === 'verify_failed') {
+      } else if (ev.type === 'verify_failed' && mirrorPicker.value === 'infocon') {
         onVerifyFinished(ev.collection_key, 'unverified', ev.error, {});
       } else if (ev.type === 'item_status') {
         onItemStatusChanged(ev);
@@ -376,26 +368,99 @@
 
     connectSSE();
 
-    // ---- Check upstream ----
-    let _activeCheckId = null;
-    let _checkPollTimer = null;
+    // ---- Mirror sites and checks ----
+    const mirrorPicker = document.getElementById('mirror-site');
+    const checkButton = document.getElementById('btn-check-now');
+    const runningChecks = new Map();
+    const siteNames = new Map([['infocon', 'InfoCon']]);
+    let displayedCheckId = null;
+    let latestRequest = 0;
 
-    function stopCheckPoll() {
-      if (_checkPollTimer) { clearInterval(_checkPollTimer); _checkPollTimer = null; }
+    function updateCheckButton() {
+      checkButton.disabled = runningChecks.has(mirrorPicker.value);
+      checkButton.textContent = checkButton.disabled ? 'Checking…' : 'Check Remote';
     }
 
-    function startCheckPoll(checkId) {
-      stopCheckPoll();
-      _checkPollTimer = setInterval(() => {
-        api('GET', '/checks/' + checkId).then(({ ok, data }) => {
-          if (!ok) return;
-          if (data.state === 'complete' || data.state === 'failed') {
-            stopCheckPoll();
-            onCheckFinished(data);
+    function showLatestCheck() {
+      const request = ++latestRequest;
+      const siteId = mirrorPicker.value;
+      displayedCheckId = null;
+      renderCollections([]);
+      hideCheckProgress();
+      updateCheckButton();
+      api('GET', '/checks/latest?site_id=' + encodeURIComponent(siteId))
+        .then(({ ok, data }) => {
+          if (ok && request === latestRequest) {
+            displayedCheckId = data.check_id;
+            renderCollections(data.results || []);
           }
-        });
-      }, 4000);
+        })
+        .catch(() => announce('Could not load the previous check.'));
     }
+
+    async function loadMirrorSites(preferredSite) {
+      const { ok, data } = await api('GET', '/mirror-sites');
+      if (!ok) return false;
+      const list = document.getElementById('mirror-sites-list');
+      list.replaceChildren();
+      const options = data.map(site => {
+        siteNames.set(site.id, site.name);
+        const row = document.createElement('li');
+        row.textContent = site.name + ' · ' + site.base_url + ' → ' +
+          (site.destination || site.folder || 'Archive root') + ' ';
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'btn btn-sm';
+        edit.textContent = 'Edit';
+        edit.setAttribute('aria-label', 'Edit ' + site.name);
+        edit.addEventListener('click', () => openSiteEditor(site));
+        row.append(edit);
+        list.append(row);
+        return new Option(site.name, site.id);
+      });
+      mirrorPicker.replaceChildren(...options);
+      mirrorPicker.value = siteNames.has(preferredSite) ? preferredSite : 'infocon';
+      localStorage.setItem('mirror-site', mirrorPicker.value);
+      showLatestCheck();
+      return true;
+    }
+
+    mirrorPicker.addEventListener('change', () => {
+      localStorage.setItem('mirror-site', mirrorPicker.value);
+      showLatestCheck();
+    });
+
+    async function fetchCheck(siteId, checkId) {
+      const { ok, status, data } = await api('GET', '/checks/' + checkId);
+      if (runningChecks.get(siteId) !== checkId) return;
+      if (status === 404) {
+        runningChecks.delete(siteId);
+        if (siteId === mirrorPicker.value) showLatestCheck();
+        return;
+      }
+      if (!ok || data.state === 'running') return;
+      runningChecks.delete(siteId);
+      if (siteId !== mirrorPicker.value) return;
+      updateCheckButton();
+      hideCheckProgress();
+      if (data.state === 'complete') {
+        ++latestRequest;
+        displayedCheckId = checkId;
+        renderCollections(data.results || []);
+        const incomplete = data.results.filter(row => row.error).length;
+        announce(incomplete
+          ? 'Check complete with ' + incomplete + ' incomplete entries.'
+          : 'Check complete · ' + data.count + ' entries found.');
+      } else {
+        announce('Check failed: ' + (data.error || 'unknown error'));
+      }
+    }
+
+    setInterval(() => {
+      for (const [siteId, checkId] of runningChecks) {
+        if (checkId) fetchCheck(siteId, checkId).catch(() => {});
+      }
+    }, 2000);
 
     function updateCheckProgress(ev) {
       const bar = document.getElementById('check-progress-bar');
@@ -404,7 +469,7 @@
       if (!bar) return;
       bar.hidden = false;
       if (ev.phase === 'fetch') {
-        if (label) label.textContent = `Fetching ${ev.section}… (${ev.current}/${ev.total})`;
+        if (label) label.textContent = `Checking ${ev.section}… (${ev.current}/${ev.total})`;
         if (prog) prog.removeAttribute('value');
       } else if (ev.phase === 'verify') {
         if (label) label.textContent = `Checking manifests… (${ev.current}/${ev.total})`;
@@ -417,43 +482,24 @@
       if (bar) bar.hidden = true;
     }
 
-    function onCheckFinished(data) {
-      const btn = document.getElementById('btn-check-now');
-      btn.disabled = false;
-      btn.textContent = 'Check infocon.org';
-      hideCheckProgress();
-      if (data.state === 'complete' && data.results) {
-        announce('Check complete — ' + data.count + ' collections found');
-        renderCollections(data.results);
-        switchTab(document.getElementById('btn-collections'));
-      } else {
-        announce('Check failed: ' + (data.error || 'unknown'));
-      }
-    }
-
-    function loadCheck(checkId) {
-      api('GET', '/checks/' + checkId).then(({ ok, data }) => {
-        if (ok) onCheckFinished(data);
-      });
-    }
-
-    document.getElementById('btn-check-now').addEventListener('click', () => {
-      const btn = document.getElementById('btn-check-now');
-      btn.disabled = true;
-      btn.textContent = 'Checking…';
-      announce('Fetching upstream listings…');
-      api('POST', '/checks', {}).then(({ ok, data }) => {
-        if (ok) {
-          _activeCheckId = data.check_id;
-          announce('Check running — this may take a minute');
-          startCheckPoll(data.check_id);
-        } else {
-          btn.disabled = false;
-          btn.textContent = 'Check infocon.org';
+    checkButton.addEventListener('click', async () => {
+      const siteId = mirrorPicker.value;
+      runningChecks.set(siteId, null);
+      updateCheckButton();
+      announce('Checking ' + siteNames.get(siteId) + '…');
+      try {
+        const { ok, data } = await api('POST', '/checks', { site_id: siteId });
+        if (!ok) throw new Error(data.error || 'unknown error');
+        runningChecks.set(siteId, data.check_id);
+        fetchCheck(siteId, data.check_id).catch(() => {});
+      } catch (error) {
+        runningChecks.delete(siteId);
+        if (siteId === mirrorPicker.value) {
+          updateCheckButton();
           hideCheckProgress();
-          announce('Check failed: ' + (data.error || 'unknown'));
+          announce('Check failed: ' + error.message);
         }
-      });
+      }
     });
 
     // ---- Clear cache ----
@@ -481,8 +527,9 @@
           btn.textContent = 'Clear cache';
           btn.classList.remove('btn-reset-confirm');
           if (ok) {
-            renderCollections([]);
-            announce('Cache cleared — click Check infocon.org to refresh');
+            runningChecks.clear();
+            showLatestCheck();
+            announce('Cache cleared. Click Check Remote to refresh.');
           } else {
             announce('Clear failed');
           }
@@ -494,7 +541,7 @@
     let _collections = [];
 
     function groupBySection(list) {
-      const map = {};
+      const map = Object.create(null);
       for (const item of list) {
         const sec = item.section || 'other';
         if (!map[sec]) map[sec] = [];
@@ -567,11 +614,12 @@
         secCb.setAttribute('aria-label', 'Select all ' + section);
         secCb.addEventListener('click', e => e.stopPropagation());
         secCb.addEventListener('change', () => {
-          details.querySelectorAll('.row-select').forEach(r => { r.checked = secCb.checked; });
+          details.querySelectorAll('.row-select:enabled').forEach(r => { r.checked = secCb.checked; });
           secCb.indeterminate = false;
           updatePlanButton();
         });
 
+        secCb.disabled = items.every(item => item.selectable === false);
         summary.appendChild(secCb);
         summary.insertAdjacentHTML('beforeend',
           `<span class="section-name">${escHtml(section)}</span>` +
@@ -596,12 +644,13 @@
 
         for (const item of items) {
           const tr = document.createElement('tr');
-          const rowKey = section + '/' + item.key;
+          const rowKey = item.id || section + '/' + item.key;
           tr.dataset.key = rowKey;
           tr.dataset.status = item.status;
           tr.dataset.name = (item.display_name || item.key).toLowerCase();
 
-          const canVerify = item.status !== 'new' && item.status !== 'unknown';
+          const canVerify = mirrorPicker.value === 'infocon'
+            && item.status !== 'new' && item.status !== 'unknown';
           const verifyBtn = canVerify
             ? `<button class="btn btn-sm btn-verify" data-collection-id="${escHtml(rowKey)}" ` +
               `title="Check local files exist with correct sizes per the InfoCon torrent">Verify</button>`
@@ -609,12 +658,12 @@
 
           const evidenceJson = escHtml(JSON.stringify(item.evidence || [], null, 2));
           tr.innerHTML =
-            `<td><input type="checkbox" class="row-select" data-key="${escHtml(rowKey)}"` +
+            `<td><input type="checkbox" class="row-select" data-key="${escHtml(rowKey)}"${item.selectable === false ? ' disabled' : ''}` +
             ` aria-label="Select ${escHtml(item.display_name || item.key)}"></td>` +
             `<td>${escHtml(item.display_name || item.key)}</td>` +
             `<td class="status-cell">${badgeHtml(item.status)}</td>` +
             `<td class="action-cell">${verifyBtn}</td>` +
-            `<td class="details-cell"></td>` +
+            `<td class="details-cell">${escHtml(item.error || '')}</td>` +
             `<td><details><summary>Torrent</summary>` +
             `<div class="evidence-payload">${evidenceJson}</div></details></td>`;
 
@@ -632,9 +681,9 @@
         }
 
         tbody.addEventListener('change', () => {
-          const rowCbs = [...tbody.querySelectorAll('.row-select')];
+          const rowCbs = [...tbody.querySelectorAll('.row-select:enabled')];
           const checkedCount = rowCbs.filter(r => r.checked).length;
-          secCb.checked = checkedCount === rowCbs.length;
+          secCb.checked = checkedCount === rowCbs.length && rowCbs.length > 0;
           secCb.indeterminate = checkedCount > 0 && checkedCount < rowCbs.length;
           updatePlanButton();
         });
@@ -656,7 +705,7 @@
     ]);
 
     function updatePlanButton() {
-      const checked = [...document.querySelectorAll('#collections-list .row-select:checked')];
+      const checked = [...document.querySelectorAll('#collections-list .row-select:checked:enabled')];
       document.getElementById('btn-plan-selected').disabled = checked.length === 0;
       const countEl = document.getElementById('selection-count');
       countEl.textContent = checked.length
@@ -669,14 +718,14 @@
       let count = 0;
       for (const row of rows) {
         const cb = row.querySelector('.row-select');
-        if (!cb) continue;
+        if (!cb || cb.disabled) continue;
         const shouldSelect = ACTIONABLE_STATUSES.has(row.dataset.status);
         cb.checked = shouldSelect;
         if (shouldSelect) count++;
       }
       // Sync each section's header checkbox (checked/indeterminate) to match.
       document.querySelectorAll('#collections-list .section-group').forEach(details => {
-        const rowCbs = [...details.querySelectorAll('.row-select')];
+        const rowCbs = [...details.querySelectorAll('.row-select:enabled')];
         const checkedCount = rowCbs.filter(r => r.checked).length;
         const secCb = details.querySelector('.section-select');
         secCb.checked = checkedCount === rowCbs.length && rowCbs.length > 0;
@@ -867,7 +916,7 @@
 
     // ---- Plan selected ----
     document.getElementById('btn-plan-selected').addEventListener('click', () => {
-      const selected = [...document.querySelectorAll('#collections-list .row-select:checked')]
+      const selected = [...document.querySelectorAll('#collections-list .row-select:checked:enabled')]
         .map(cb => cb.dataset.key);
       if (!selected.length) return;
 
@@ -875,7 +924,9 @@
       btn.disabled = true;
       btn.textContent = 'Planning…';
 
-      api('POST', '/plans', { collection_ids: selected }).then(({ ok, data }) => {
+      api('POST', '/plans', {
+        collection_ids: selected, site_id: mirrorPicker.value, check_id: displayedCheckId
+      }).then(({ ok, data }) => {
         btn.disabled = false;
         btn.textContent = 'Plan selected';
         if (ok) {
@@ -915,6 +966,7 @@
           `<div class="plan-summary-row">` +
           `<code class="plan-id">${escHtml(plan.plan_id.slice(0, 8))}…</code>` +
           `${badgeHtml(plan.state)}` +
+          `<span class="plan-meta">${escHtml(siteNames.get(plan.site_id) || plan.site_id || 'InfoCon')}</span>` +
           `<span class="plan-meta">${plan.item_count} item${plan.item_count !== 1 ? 's' : ''}</span>` +
           `<span class="plan-meta">${fmtDate(plan.created_at)}</span>` +
           `<button class="btn btn-sm btn-view-plan" data-plan-id="${escHtml(plan.plan_id)}">View</button>` +
@@ -979,7 +1031,7 @@
         `<td>${fmt(item.size_bytes)}</td>` +
         `<td>${item.fallback_reason ? escHtml(item.fallback_reason) : '—'}</td>` +
         `<td class="item-actions">` +
-        (item.status === 'blocked'
+        (item.status === 'blocked' && !plan.destination_changed
           ? `<button class="btn btn-sm" data-action="approve-fallback" data-id="${escHtml(item.item_id)}">Use HTTPS</button>`
           : '') +
         (item.status === 'pending' || item.status === 'downloading'
@@ -992,32 +1044,132 @@
         `</tr>`
       ).join('');
 
-      const canStart = plan.state === 'draft' || plan.state === 'preflighted';
+      const canStart = !plan.destination_changed &&
+        ['draft', 'preflighted', 'failed'].includes(plan.state);
+      const previewItems = (plan.items || []).filter(item => item.status !== 'complete');
+      const previewButton = canStart && previewItems.length
+        ? '<button class="btn" type="button" data-preview-toggle aria-expanded="false">' +
+          'Preview file changes</button>'
+        : '';
       detail.innerHTML =
         `${privacyHtml}` +
         `${spaceHtml}` +
+        (plan.destination_changed && plan.state !== 'complete'
+          ? '<p>Site settings changed. Run Check Remote and create a new plan.</p>' : '') +
         `<div class="plan-detail-header">` +
-        `<h2>Plan <code>${escHtml(plan.plan_id.slice(0, 8))}…</code> ${badgeHtml(plan.state)}</h2>` +
+        `<h2>${escHtml(siteNames.get(plan.site_id) || '')} Plan <code>${escHtml(plan.plan_id.slice(0, 8))}…</code> ${badgeHtml(plan.state)}</h2>` +
+        (plan.archive_root
+          ? `<p class="plan-meta">Archive: ${escHtml(plan.archive_root)}</p>` : '') +
         `<div class="plan-detail-meta">` +
         `${torrentItems.length} torrent · ${httpsItems.length} HTTPS · ${blockedItems.length} blocked` +
         `</div>` +
         `</div>` +
+        `${previewButton}<div class="plan-file-preview" hidden></div>` +
         `<table class="plan-items-table" aria-label="Plan items">` +
         `<thead><tr><th>Path</th><th>Method</th><th>Status</th><th>Size</th><th>Reason</th><th></th></tr></thead>` +
         `<tbody>${rows}</tbody>` +
         `</table>` +
         `<div class="plan-actions">` +
         `<button class="btn btn-primary" data-action="start-plan" data-id="${escHtml(plan.plan_id)}"` +
-        (canStart ? '' : ' disabled') + `>Start transfer</button>` +
+        (canStart ? '' : ' disabled') + `>${plan.state === 'failed' ? 'Retry transfer' : 'Start transfer'}</button>` +
         `<button class="btn" data-action="close-detail">Close</button>` +
         `</div>`;
 
+      if (previewButton) setupPlanPreview(detail, plan.plan_id, previewItems);
       detail.querySelectorAll('[data-action]').forEach(btn => {
         btn.addEventListener('click', () => handlePlanAction(btn.dataset.action, btn.dataset.id, detail));
       });
 
       container.appendChild(detail);
       detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function setupPlanPreview(detail, planId, items) {
+      const toggle = detail.querySelector('[data-preview-toggle]');
+      const panel = detail.querySelector('.plan-file-preview');
+      const pickerId = 'preview-item-' + planId;
+      const searchId = 'preview-search-' + planId;
+      panel.innerHTML =
+        '<form class="preview-controls">' +
+        `<label for="${pickerId}">Collection</label><select id="${pickerId}"></select>` +
+        `<label for="${searchId}">Find a path</label>` +
+        `<input id="${searchId}" type="search" maxlength="240">` +
+        '<button class="btn btn-sm" type="submit">Search</button></form>' +
+        '<p>Preview uses the current local files. Files outside the plan stay in place.</p>' +
+        '<p role="status" data-preview-status></p>' +
+        '<div class="preview-table-wrap" tabindex="0"><table aria-label="File changes" hidden>' +
+        '<thead><tr><th>Path</th><th>Action</th><th>Local size</th>' +
+        '<th>Remote size</th><th>Reason</th></tr></thead><tbody></tbody></table></div>' +
+        '<div class="preview-controls">' +
+        '<button class="btn btn-sm" type="button" data-prev disabled>Previous</button>' +
+        '<button class="btn btn-sm" type="button" data-next disabled>Next</button></div>';
+
+      const picker = panel.querySelector('select');
+      items.forEach(item => picker.add(new Option(item.destination_relpath, item.item_id)));
+      const search = panel.querySelector('input');
+      const status = panel.querySelector('[data-preview-status]');
+      const table = panel.querySelector('table');
+      const tbody = table.querySelector('tbody');
+      const prev = panel.querySelector('[data-prev]');
+      const next = panel.querySelector('[data-next]');
+      const labels = {
+        add: 'Add', keep: 'Keep', replace: 'Replace', verify: 'Verify',
+        partial: 'Partial download', conflict: 'Conflict',
+      };
+      let offset = 0;
+      let pageSize = 25;
+      let requestId = 0;
+
+      async function loadPreview(pageOffset) {
+        const current = ++requestId;
+        table.hidden = true;
+        prev.disabled = next.disabled = true;
+        status.textContent = 'Checking file changes…';
+        const params = new URLSearchParams({offset: pageOffset, q: search.value.trim()});
+        try {
+          const path = '/plans/' + planId + '/items/' + picker.value + '/preview?' + params;
+          const { ok, data } = await api('GET', path);
+          if (current !== requestId || panel.hidden) return;
+          if (!ok) throw new Error(data.error || 'Could not load file changes.');
+          offset = data.offset;
+          pageSize = data.page_size;
+          const rows = data.rows.map(file => {
+            const tr = document.createElement('tr');
+            for (const text of [
+              file.path + (file.kind === 'folder' ? '/' : ''), labels[file.action],
+              fmt(file.local_bytes), fmt(file.remote_bytes), file.reason || '',
+            ]) {
+              const td = document.createElement('td');
+              td.textContent = text;
+              tr.append(td);
+            }
+            return tr;
+          });
+          tbody.replaceChildren(...rows);
+          table.hidden = !rows.length;
+          status.textContent = rows.length
+            ? `${offset + 1}–${offset + rows.length} of ${data.total.toLocaleString()} entries · ${data.method.toUpperCase()}`
+            : 'No matching paths.';
+          prev.disabled = offset === 0;
+          next.disabled = offset + pageSize >= data.total;
+        } catch (error) {
+          if (current === requestId) status.textContent = error.message;
+        }
+      }
+
+      toggle.addEventListener('click', () => {
+        panel.hidden = !panel.hidden;
+        toggle.setAttribute('aria-expanded', String(!panel.hidden));
+        if (!panel.hidden) loadPreview(0);
+        else ++requestId;
+      });
+      picker.addEventListener('change', () => loadPreview(0));
+      panel.querySelector('form').addEventListener('submit', event => {
+        event.preventDefault();
+        loadPreview(0);
+      });
+      prev.addEventListener('click', () => loadPreview(Math.max(0, offset - pageSize)));
+      next.addEventListener('click', () => loadPreview(offset + pageSize));
     }
 
     function handlePlanAction(action, id, detailEl) {
@@ -1214,6 +1366,87 @@
     }
 
     document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
+
+    const editSiteForm = document.getElementById('edit-mirror-site');
+    const editSiteStatus = document.getElementById('mirror-edit-status');
+    const editSiteName = document.getElementById('edit-mirror-name');
+    const editSiteUrl = document.getElementById('edit-mirror-url');
+    const editSitePath = document.getElementById('edit-mirror-path');
+    let editingSiteId = null;
+
+    function openSiteEditor(site) {
+      editingSiteId = site.id;
+      document.getElementById('edit-mirror-title').textContent = 'Edit ' + site.name;
+      editSiteName.value = site.name;
+      editSiteUrl.value = site.base_url;
+      editSiteUrl.readOnly = ['infocon', 'defcon'].includes(site.id);
+      editSitePath.value = site.local_path || '';
+      editSitePath.placeholder = site.local_path ? '' : (site.destination || '');
+      editSiteStatus.textContent = '';
+      editSiteForm.hidden = false;
+      editSitePath.focus();
+    }
+
+    document.getElementById('cancel-mirror-edit').addEventListener('click', () => {
+      editSiteForm.hidden = true;
+      editSiteStatus.textContent = '';
+    });
+
+    editSiteForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      const siteId = editingSiteId;
+      const button = editSiteForm.querySelector('button[type="submit"]');
+      button.disabled = true;
+      editSiteStatus.textContent = 'Saving site…';
+      try {
+        const fields = Object.fromEntries(new FormData(editSiteForm));
+        const { ok, data } = await api('PUT', '/mirror-sites/' + encodeURIComponent(siteId), fields);
+        if (!ok) throw new Error(data.error || 'Could not save the site.');
+        if (data.requires_check) runningChecks.delete(siteId);
+        if (editingSiteId === siteId) editSiteForm.hidden = true;
+        editSiteStatus.textContent = data.requires_check
+          ? 'Site saved. Run Check Remote to compare your new site settings.'
+          : 'Site saved.';
+        await loadMirrorSites(mirrorPicker.value);
+      } catch (error) {
+        editSiteStatus.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    const siteForm = document.getElementById('add-mirror-site');
+    const folderInput = document.getElementById('mirror-folder');
+    folderInput.addEventListener('input', () => {
+      const root = document.getElementById('setting-archive-root').textContent;
+      document.getElementById('mirror-destination').textContent = folderInput.value
+        ? root.replace(/[/\\]$/, '') + '/' + folderInput.value
+        : 'Choose a new folder under the archive root.';
+    });
+    siteForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = siteForm.querySelector('button[type="submit"]');
+      const status = document.getElementById('mirror-add-status');
+      button.disabled = true;
+      status.textContent = 'Checking the directory listing…';
+      try {
+        const fields = Object.fromEntries(new FormData(siteForm));
+        const { ok, data } = await api('POST', '/mirror-sites', fields);
+        if (!ok) throw new Error(data.error || 'Could not add the site.');
+        siteForm.reset();
+        folderInput.dispatchEvent(new Event('input'));
+        status.textContent = data.name + ' added.';
+        await loadMirrorSites(data.id);
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    loadMirrorSites(localStorage.getItem('mirror-site') || 'infocon')
+      .then(loaded => { if (!loaded) showLatestCheck(); })
+      .catch(() => showLatestCheck());
 
     window.connectSSE = connectSSE;
 

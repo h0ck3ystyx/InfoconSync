@@ -328,5 +328,108 @@ def test_u011_check_button_reachable_at_narrow_width(live_server, page: Page):
     page.set_viewport_size({"width": 360, "height": 640})
     page.goto(live_server["make_bootstrap_url"]())
     page.wait_for_url(live_server["base"] + "/")
-    btn = page.get_by_role("button", name="Check infocon.org")
+    btn = page.get_by_role("button", name="Check Remote")
     expect(btn).to_be_visible()
+
+
+def test_one_check_button_follows_selected_mirror_site(page_authed: Page):
+    page = page_authed
+    sites = [
+        {"id": "infocon", "name": "InfoCon", "base_url": "https://infocon.org/", "folder": ""},
+        {"id": "defcon", "name": "DEF CON Media", "base_url": "https://media.defcon.org/",
+         "folder": "DefconMedia"},
+    ]
+    requests: list[str] = []
+
+    def result(site_id: str):
+        name = {"infocon": "InfoCon Example", "defcon": "DEF CON Example"}[site_id]
+        return {
+            "check_id": site_id, "state": "complete", "count": 1,
+            "results": [{"section": "Conferences", "key": name, "status": "new"}],
+        }
+
+    def handle_checks(route):
+        request = route.request
+        if request.method == "POST":
+            site_id = request.post_data_json["site_id"]
+            requests.append(site_id)
+            route.fulfill(status=202, json={"check_id": site_id})
+        elif request.url.endswith("/checks/infocon"):
+            route.fulfill(json=result("infocon"))
+        elif request.url.endswith("/checks/defcon"):
+            route.fulfill(json=result("defcon"))
+        else:
+            route.fulfill(status=404, json={"error": "not_found"})
+
+    page.route("**/api/mirror-sites", lambda route: route.fulfill(json=sites))
+    page.route("**/api/checks**", handle_checks)
+    page.reload()
+    picker = page.get_by_label("Mirror site")
+    check = page.get_by_role("button", name="Check Remote")
+    expect(check).to_have_count(1)
+    expect(picker).to_have_value("infocon")
+    check.click()
+    expect(page.get_by_text("InfoCon Example", exact=True)).to_be_attached()
+
+    picker.select_option("defcon")
+    expect(page.get_by_text("InfoCon Example", exact=True)).to_have_count(0)
+    check.click()
+    expect(page.get_by_text("DEF CON Example", exact=True)).to_be_attached()
+    assert requests == ["infocon", "defcon"]
+    page.reload()
+    expect(picker).to_have_value("defcon")
+
+
+def test_add_site_form_selects_new_site(page_authed: Page):
+    page = page_authed
+    sites = [
+        {"id": "infocon", "name": "InfoCon", "base_url": "https://infocon.org/", "folder": ""},
+    ]
+
+    def handle_sites(route):
+        if route.request.method == "POST":
+            site = {"id": "extra", **route.request.post_data_json}
+            sites.append(site)
+            route.fulfill(status=201, json=site)
+        else:
+            route.fulfill(json=sites)
+
+    page.route("**/api/mirror-sites", handle_sites)
+    page.reload()
+    page.get_by_role("tab", name="Settings").click()
+    page.get_by_label("Site name").fill("Public Artwork")
+    page.get_by_label("HTTPS directory URL").fill("https://files.example/art/")
+    page.get_by_label("Local folder").fill("Artwork")
+    page.get_by_role("button", name="Add site").click()
+    expect(page.get_by_text("Public Artwork added.", exact=True)).to_be_visible()
+    page.get_by_role("tab", name="Collections").click()
+    expect(page.get_by_label("Mirror site")).to_have_value("extra")
+
+
+def test_edit_builtin_mirror_destination(page_authed: Page):
+    page = page_authed
+    site = {
+        "id": "defcon", "name": "DEF CON Media", "base_url": "https://media.defcon.org/",
+        "folder": "DefconMedia", "local_path": None, "destination": "/archive/DefconMedia",
+    }
+
+    def save(route):
+        fields = route.request.post_data_json
+        assert fields["base_url"] == site["base_url"]
+        path = fields["local_path"]
+        site.update(local_path=path, destination=path)
+        route.fulfill(json={**site, "requires_check": True})
+
+    page.route("**/api/mirror-sites", lambda route: route.fulfill(json=[site]))
+    page.route("**/api/mirror-sites/defcon", save)
+    page.reload()
+    page.get_by_role("tab", name="Settings").click()
+    page.get_by_role("button", name="Edit DEF CON Media").click()
+    destination = page.get_by_label("Local destination")
+    expect(destination).to_have_attribute("placeholder", "/archive/DefconMedia")
+    destination.fill("/Volumes/Media/DEF CON")
+    page.get_by_role("button", name="Save site").click()
+    expect(page.get_by_text("Site saved. Run Check Remote", exact=False)).to_be_visible()
+    expect(page.get_by_text("/Volumes/Media/DEF CON", exact=False)).to_be_visible()
+    page.get_by_role("button", name="Edit DEF CON Media").click()
+    expect(destination).to_have_value("/Volumes/Media/DEF CON")

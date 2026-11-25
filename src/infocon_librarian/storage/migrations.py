@@ -201,8 +201,36 @@ _MIGRATIONS: list[tuple[int, str]] = [
         PRAGMA foreign_keys=ON;
         """,
     ),
+    (
+        7,
+        """
+        BEGIN IMMEDIATE;
+        CREATE TABLE mirror_sites (
+            id TEXT PRIMARY KEY,
+            name TEXT COLLATE NOCASE NOT NULL UNIQUE,
+            base_url TEXT NOT NULL UNIQUE,
+            folder TEXT COLLATE NOCASE NOT NULL UNIQUE
+        );
+        INSERT INTO mirror_sites VALUES
+            ('infocon', 'InfoCon', 'https://infocon.org/', ''),
+            ('defcon', 'DEF CON Media', 'https://media.defcon.org/', 'DefconMedia');
+        ALTER TABLE checks ADD COLUMN site_id TEXT NOT NULL DEFAULT 'infocon';
+        CREATE INDEX idx_checks_site ON checks (archive_root_id, site_id, completed_at DESC);
+        ALTER TABLE plans ADD COLUMN site_id TEXT NOT NULL DEFAULT 'infocon';
+        ALTER TABLE plan_items ADD COLUMN mirror_json TEXT;
+        """,
+    ),
+    (
+        8,
+        """
+        BEGIN IMMEDIATE;
+        ALTER TABLE mirror_sites ADD COLUMN local_path TEXT;
+        ALTER TABLE mirror_sites ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE checks ADD COLUMN site_version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE plans ADD COLUMN site_version INTEGER NOT NULL DEFAULT 1;
+        """,
+    ),
 ]
-
 _LATEST_VERSION = max(v for v, _ in _MIGRATIONS)
 
 

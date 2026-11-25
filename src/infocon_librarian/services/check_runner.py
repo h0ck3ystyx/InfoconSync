@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from infocon_librarian.remote.client import RemoteClient, RemoteFetchError
 from infocon_librarian.remote.fancyindex import parse_listing
+from infocon_librarian.remote.mirror import managed_sections, name_key
 from infocon_librarian.services.check_service import check_collections
 from infocon_librarian.services.verify_runner import manifest_check
 from infocon_librarian.storage.database import open_db
@@ -88,6 +89,7 @@ def run_check(
     broadcast: Callable[[dict[str, Any]], None],
     base_url: str = INFOCON_BASE_URL,
     adapter: TorrentAdapter | None = None,
+    default_root: Path | None = None,
 ) -> None:
     """Execute a full upstream check and persist results.
 
@@ -104,11 +106,13 @@ def run_check(
         if section:
             sections_to_scan = [section]
         else:
+            managed = managed_sections(conn, root_path, default_root)
             # Every non-hidden, non-skip top-level directory
             sections_to_scan = sorted(
                 name
                 for name in _local_top_dirs(root_path)
                 if name not in _SKIP_DIRS and not name.startswith(".")
+                and name_key(name) not in managed
             )
 
         log.info("Check %s: scanning sections %s", check_id, sections_to_scan)
@@ -329,6 +333,7 @@ def start_check_thread(
     broadcast: Callable[[dict[str, Any]], None],
     base_url: str = INFOCON_BASE_URL,
     adapter: TorrentAdapter | None = None,
+    default_root: Path | None = None,
 ) -> threading.Thread:
     """Spin up a daemon thread to run the check. Returns the thread."""
     t = threading.Thread(
@@ -341,6 +346,7 @@ def start_check_thread(
             "broadcast": broadcast,
             "base_url": base_url,
             "adapter": adapter,
+            "default_root": default_root,
         },
         daemon=True,
         name=f"check-{check_id[:8]}",

@@ -68,6 +68,28 @@ torrent transfers — but verification and torrent downloads need it.
 
 ## Usage
 
+In the browser, select **InfoCon** or **DEF CON Media** under **Mirror site** and
+click **Check Remote**. Each site keeps its own last check. Select the entries
+you want and click **Create Plan**. Choose **Preview file changes** to browse
+or search the selected files and see which may be added, kept, replaced, or
+checked by BitTorrent. The preview reads the current destination without
+starting a transfer.
+DEF CON Media mirrors the publicly listed tree under `DefconMedia/` inside the
+configured archive root. Existing InfoCon files stay in their current location.
+
+Use **Settings → Mirror sites → Add site** to add a public HTTPS directory
+index. Supply a name, the direct URL of an nginx fancyindex or Apache-style
+directory listing, and a new local folder under the archive root. The app
+validates the index before saving. Custom sites use HTTPS, and DEF CON uses
+BitTorrent when the published torrent covers the full selected directory.
+Use **Edit** next to a site to set its local destination to an existing folder.
+Leave the destination blank to restore the default. Files stay in their current
+location. After changing the destination, run **Check Remote** and create a new
+plan. In Linux service mode the folder must be within the configured NAS archive.
+
+Inaccessible or unsupported entries are shown as incomplete. Local-only files
+are preserved, and a matching file size does not verify a file's contents.
+
 ```bash
 # Launch the browser UI (opens automatically)
 infocon-librarian --root /Volumes/Archives/InfoCon
@@ -147,7 +169,7 @@ Browser UI / CLI
 ```
 
 Key invariants:
-1. Browser input never becomes a remote URL or filesystem path
+1. Checks and plans use saved site IDs. Add site validates the public HTTPS index and local folder before saving.
 2. The planner decides transfer method before a job starts — no silent switching
 3. Only `TransferManager` calls the torrent adapter
 4. A torrent is `Piece-verified` only after a successful final recheck

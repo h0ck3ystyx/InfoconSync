@@ -61,7 +61,11 @@
           <option value="local_only">Local only</option>
           <option value="unknown">Unknown</option>
         </select>
-        <button class="btn" id="btn-check-now" type="button">Check infocon.org</button>
+        <label for="mirror-site">Mirror site</label>
+        <select id="mirror-site">
+          <option value="infocon">InfoCon</option>
+        </select>
+        <button class="btn" id="btn-check-now" type="button">Check Remote</button>
         <button class="btn" id="btn-select-actionable" type="button"
           title="Select every collection that's New, Needs update, Present-unverified, or Unknown, across all sections">Select actionable</button>
         <span id="selection-count" class="selection-count"></span>
@@ -77,7 +81,7 @@
       </div>
 
       <div id="collections-container">
-        <p id="collections-empty">No collections loaded. Click <strong>Check infocon.org</strong> to fetch.</p>
+        <p id="collections-empty">No collections loaded. Click <strong>Check Remote</strong> to fetch.</p>
       </div>
     </section>
 
@@ -105,6 +109,48 @@
     <!-- Settings tab -->
     <section id="tab-settings" class="tab-panel" role="tabpanel" aria-labelledby="btn-settings">
       <div class="settings-panel">
+        <div class="card">
+          <h2>Mirror sites</h2>
+          <ul id="mirror-sites-list"></ul>
+          <form id="edit-mirror-site" hidden>
+            <h3 id="edit-mirror-title">Edit site</h3>
+            <div class="setting-row">
+              <label for="edit-mirror-name">Display name</label>
+              <input class="setting-control" id="edit-mirror-name" name="name" required maxlength="80">
+            </div>
+            <div class="setting-row">
+              <label for="edit-mirror-url">Remote directory URL</label>
+              <input class="setting-control" id="edit-mirror-url" name="base_url" type="url" required>
+            </div>
+            <div class="setting-row">
+              <label for="edit-mirror-path">Local destination</label>
+              <input class="setting-control" id="edit-mirror-path" name="local_path"
+                     aria-describedby="edit-mirror-hint">
+            </div>
+            <p id="edit-mirror-hint" class="setting-hint">Enter the full path to an existing folder.
+              Leave it blank to use the default location. Existing files stay where they are.</p>
+            <button class="btn btn-primary" type="submit">Save site</button>
+            <button class="btn" type="button" id="cancel-mirror-edit">Cancel</button>
+          </form>
+          <p id="mirror-edit-status" class="settings-status" role="status"></p>
+          <form id="add-mirror-site">
+            <div class="setting-row">
+              <label for="mirror-name">Site name</label>
+              <input class="setting-control" id="mirror-name" name="name" required maxlength="80">
+            </div>
+            <div class="setting-row">
+              <label for="mirror-url">HTTPS directory URL</label>
+              <input class="setting-control" id="mirror-url" name="base_url" type="url" required>
+            </div>
+            <div class="setting-row">
+              <label for="mirror-folder">Local folder</label>
+              <input class="setting-control" id="mirror-folder" name="folder" required maxlength="120">
+            </div>
+            <p id="mirror-destination" class="setting-hint">Choose a new folder under the archive root.</p>
+            <button class="btn" type="submit">Add site</button>
+            <span id="mirror-add-status" class="settings-status" role="status"></span>
+          </form>
+        </div>
         <div class="card">
           <h2>Transfer</h2>
           <div class="setting-row">

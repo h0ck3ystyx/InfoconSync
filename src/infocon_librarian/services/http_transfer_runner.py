@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import hashlib
 import json
 import logging
 import threading
@@ -26,6 +27,7 @@ import httpx
 
 from infocon_librarian.remote.client import new_http_client
 from infocon_librarian.remote.fancyindex import parse_listing
+from infocon_librarian.remote.mirror import STAGING, get_site, mirror_client, mirror_path
 from infocon_librarian.service_runtime import (
     ServiceInterrupted,
     checkpoint,
@@ -106,6 +108,7 @@ def _crawl_files(
     client: httpx.Client,
     *,
     _depth: int = 0,
+    strict: bool = False,
 ) -> list[tuple[str, str]]:
     """Return (relative_path_within_collection, file_url) for every file under current_url.
 
@@ -114,12 +117,16 @@ def _crawl_files(
     """
     checkpoint()
     if _depth > _MAX_CRAWL_DEPTH:
+        if strict:
+            raise ValueError("Directory listing exceeded the supported nesting depth")
         log.warning("Crawl depth limit reached at %s", current_url)
         return []
     try:
         resp = client.get(current_url, timeout=30)
         resp.raise_for_status()
     except Exception as exc:
+        if strict:
+            raise
         log.warning("Crawl failed for %s: %s", current_url, exc)
         return []
 
@@ -136,7 +143,7 @@ def _crawl_files(
             results.append((rel, entry.url))
         elif entry.kind == "directory":
             results.extend(
-                _crawl_files(collection_url, entry.url, client, _depth=_depth + 1)
+                _crawl_files(collection_url, entry.url, client, _depth=_depth + 1, strict=strict)
             )
     # Probe for nginx fancyindex files not visible in the listing
     results.extend(_probe_hidden_files(current_url, collection_url, client))
@@ -146,13 +153,14 @@ def _crawl_files(
 class _ClientHolder:
     """Owns the shared HTTP client and can rebuild it if the connection wedges."""
 
-    def __init__(self) -> None:
-        self.client = new_http_client(timeout=60)
+    def __init__(self, factory: Callable[[], httpx.Client] | None = None) -> None:
+        self._factory = factory or (lambda: new_http_client(timeout=60))
+        self.client = self._factory()
 
     def refresh(self) -> None:
         with contextlib.suppress(Exception):
             self.client.close()
-        self.client = new_http_client(timeout=60)
+        self.client = self._factory()
 
     def close(self) -> None:
         with contextlib.suppress(Exception):
@@ -229,13 +237,24 @@ def _remote_file_size(client: httpx.Client, url: str) -> int | None:
 
 def _is_already_complete(
     destination: Path, remote_size: int | None, *, accept_larger: bool = False,
+    part_path: Path | None = None,
 ) -> bool:
     """Reuse only a known size match, or an explicitly accepted larger local file."""
-    part_path = destination.with_suffix(destination.suffix + ".part")
+    part_path = part_path or destination.with_suffix(destination.suffix + ".part")
     if remote_size is None or not destination.is_file() or part_path.exists():
         return False
     size = destination.stat().st_size
     return size == remote_size or (accept_larger and size > remote_size)
+
+
+def mirror_download_paths(root: Path, relative: str, url: str) -> tuple[Path, Path]:
+    destination = mirror_path(root, relative)
+    staging = root / STAGING
+    token = hashlib.sha256(f"{relative}\n{url}".encode()).hexdigest()
+    partial = staging / f"{token}.part"
+    if any(p.is_symlink() for p in (staging, partial, partial.with_suffix(".part.meta"))):
+        raise ValueError("Symbolic link in mirror download staging")
+    return destination, partial
 
 
 def _download_item(
@@ -249,6 +268,7 @@ def _download_item(
     concurrency: int,
     client_factory: Callable[[], httpx.Client] | None = None,
     accept_larger: bool = False,
+    mirror_folder: str | None = None,
 ) -> dict[str, Any]:
     """Download all files for one plan item. Returns outcome dict.
 
@@ -268,9 +288,22 @@ def _download_item(
     broadcast({"type": "item_status", "plan_id": plan_id, "item_id": item.id,
                "status": "downloading", "collection_key": item.collection_key})
 
-    file_list = _crawl_files(collection_url, collection_url, holder.client)
-    if not file_list:
-        return {"status": "failed", "error": "no_files_found"}
+    if item.mirror_json:
+        if mirror_folder is None:
+            return {"status": "failed", "error": "missing_mirror_folder"}
+        manifest = json.loads(item.mirror_json)
+        file_list = manifest["files"]
+        try:
+            for relative in manifest["dirs"]:
+                checkpoint()
+                path = (Path(mirror_folder) / relative).as_posix()
+                mirror_path(archive_root, path).mkdir(parents=True, exist_ok=True)
+        except (ValueError, OSError) as exc:
+            return {"status": "failed", "error": str(exc)}
+    else:
+        file_list = _crawl_files(collection_url, collection_url, holder.client)
+        if not file_list:
+            return {"status": "failed", "error": "no_files_found"}
 
     total = len(file_list)
     log.info(
@@ -333,7 +366,14 @@ def _download_item(
             abort.set()
             return
 
-        destination = (dest_base / rel_path).resolve()
+        part_path = None
+        if mirror_folder is not None:
+            mirror_root = (
+                mirror_path(archive_root, mirror_folder) if mirror_folder else archive_root
+            )
+            destination, part_path = mirror_download_paths(mirror_root, rel_path, file_url)
+        else:
+            destination = (dest_base / rel_path).resolve()
 
         # Containment check — destination must stay inside archive root
         if not destination.is_relative_to(archive_root_resolved):
@@ -346,7 +386,9 @@ def _download_item(
         # Resume support: a completed file from a prior run is left in place.
         remote_size = (_remote_file_size(clients.get(), file_url)
                        if destination.is_file() else None)
-        if _is_already_complete(destination, remote_size, accept_larger=accept_larger):
+        if _is_already_complete(
+            destination, remote_size, accept_larger=accept_larger, part_path=part_path,
+        ):
             clients.note_success()
             with state_lock:
                 skipped += 1
@@ -373,7 +415,8 @@ def _download_item(
             })
 
         result = download(
-            file_url, destination, http_client=clients.get(), progress=_progress
+            file_url, destination, http_client=clients.get(), progress=_progress,
+            part_path=part_path,
         )
         if result.state == DownloadState.COMPLETE:
             clients.note_success()
@@ -412,11 +455,11 @@ def _download_item(
             for future in futures:
                 # Surface an unexpected worker crash instead of swallowing it,
                 # but keep draining the rest of the pool.
-                exc = future.exception()
-                if isinstance(exc, ServiceInterrupted):
-                    raise exc
-                if exc is not None:
-                    log.error("HTTP worker crashed for %s: %s", item.id[:8], exc)
+                worker_error = future.exception()
+                if isinstance(worker_error, ServiceInterrupted):
+                    raise worker_error
+                if worker_error is not None:
+                    log.error("HTTP worker crashed for %s: %s", item.id[:8], worker_error)
                     with state_lock:
                         failed_files.append("worker_error")
     finally:
@@ -454,6 +497,19 @@ def run_http_transfer(
     concurrency = _resolve_concurrency(conn)
 
     try:
+        plan = repo.get_plan(plan_id)
+        if plan is None:
+            return
+        site = get_site(conn, plan.site_id)
+        if site is None or site.version != plan.site_version:
+            raise ValueError("Plan mirror site is unavailable")
+        def create_mirror_client() -> httpx.Client:
+            return mirror_client(site.base_url)
+
+        is_mirror = site.id != "infocon"
+        client_factory = create_mirror_client if is_mirror else None
+        if is_mirror:
+            concurrency = min(concurrency, 2)
         items = repo.list_items(plan_id)
         https_items = [it for it in items if it.method == "https" and it.status == "pending"]
 
@@ -465,7 +521,7 @@ def run_http_transfer(
 
         outcomes: dict[str, dict[str, Any]] = {}
 
-        holder = _ClientHolder()
+        holder = _ClientHolder(client_factory)
         try:
             for item in https_items:
                 # The item may have been paused while still queued behind an
@@ -480,6 +536,8 @@ def run_http_transfer(
                 outcome = _download_item(
                     item, archive_root, holder, broadcast, plan_id, repo,
                     concurrency=concurrency,
+                    client_factory=client_factory,
+                    mirror_folder=site.relative_folder if is_mirror else None,
                     accept_larger=bool(
                         SettingsRepository(conn).get_int("accept_larger_local_files")
                     ),
@@ -532,6 +590,7 @@ def run_http_transfer(
         receipt_path.write_text(json.dumps({
             "receipt_id": receipt_id,
             "plan_id": plan_id,
+            "site_id": site.id,
             "completed_at": _now_iso(),
             "items": receipt_items,
         }, indent=2))

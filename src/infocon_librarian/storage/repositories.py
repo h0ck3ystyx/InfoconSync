@@ -74,6 +74,13 @@ class ArchiveRootRepository:
             return None
         return ArchiveRootRecord(**dict(row))
 
+    def get(self, archive_id: str) -> ArchiveRootRecord | None:
+        row = self._conn.execute(
+            "SELECT id, canonical_path, volume_fingerprint, last_seen_at "
+            "FROM archive_roots WHERE id = ?", (archive_id,),
+        ).fetchone()
+        return ArchiveRootRecord(**dict(row)) if row else None
+
     def list_all(self) -> list[ArchiveRootRecord]:
         rows = self._conn.execute(
             "SELECT id, canonical_path, volume_fingerprint, last_seen_at FROM archive_roots"
@@ -96,6 +103,8 @@ class CheckRecord:
     completed_at: str | None
     error: str | None
     result_json: str | None  # JSON-serialised list[dict]
+    site_id: str = "infocon"
+    site_version: int = 1
 
 
 class CheckRepository:
@@ -108,12 +117,15 @@ class CheckRepository:
         *,
         archive_root_id: str | None = None,
         section: str | None = None,
+        site_id: str = "infocon",
+        site_version: int = 1,
     ) -> CheckRecord:
         now = _now()
         self._conn.execute(
-            "INSERT INTO checks (id, archive_root_id, section, state, started_at) "
-            "VALUES (?, ?, ?, 'running', ?)",
-            (check_id, archive_root_id, section, now),
+            "INSERT INTO checks "
+            "(id, archive_root_id, section, state, started_at, site_id, site_version) "
+            "VALUES (?, ?, ?, 'running', ?, ?, ?)",
+            (check_id, archive_root_id, section, now, site_id, site_version),
         )
         self._conn.commit()
         return CheckRecord(
@@ -125,6 +137,7 @@ class CheckRepository:
             completed_at=None,
             error=None,
             result_json=None,
+            site_id=site_id, site_version=site_version,
         )
 
     def complete(self, check_id: str, result_json: str) -> None:
@@ -146,21 +159,23 @@ class CheckRepository:
     def get(self, check_id: str) -> CheckRecord | None:
         row = self._conn.execute(
             "SELECT id, archive_root_id, section, state, started_at, "
-            "completed_at, error, result_json FROM checks WHERE id=?",
+            "completed_at, error, result_json, site_id, site_version FROM checks WHERE id=?",
             (check_id,),
         ).fetchone()
         if row is None:
             return None
         return CheckRecord(**dict(row))
 
-    def get_latest_completed(self, archive_root_id: str) -> CheckRecord | None:
+    def get_latest_completed(
+        self, archive_root_id: str, site_id: str = "infocon", site_version: int = 1,
+    ) -> CheckRecord | None:
         """Return the most recently completed check for this archive root."""
         row = self._conn.execute(
             "SELECT id, archive_root_id, section, state, started_at, "
-            "completed_at, error, result_json FROM checks "
-            "WHERE archive_root_id=? AND state='complete' "
+            "completed_at, error, result_json, site_id, site_version FROM checks "
+            "WHERE archive_root_id=? AND site_id=? AND site_version=? AND state='complete' "
             "ORDER BY completed_at DESC LIMIT 1",
-            (archive_root_id,),
+            (archive_root_id, site_id, site_version),
         ).fetchone()
         if row is None:
             return None

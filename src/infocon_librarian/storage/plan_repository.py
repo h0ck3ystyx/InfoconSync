@@ -17,6 +17,8 @@ class PlanRecord:
     archive_root_id: str
     state: str        # "draft" | "preflighted" | "running" | "complete" | "failed"
     created_at: str
+    site_id: str = "infocon"
+    site_version: int = 1
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class PlanItemRecord:
     url: str | None
     torrent_url: str | None
     size_bytes: int | None
+    mirror_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,21 +48,26 @@ class PlanRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
-    def create_plan(self, archive_root_id: str) -> PlanRecord:
+    def create_plan(
+        self, archive_root_id: str, site_id: str = "infocon", site_version: int = 1,
+    ) -> PlanRecord:
         plan_id = str(uuid.uuid4())
         now = _now()
         self._conn.execute(
-            "INSERT INTO plans (id, archive_root_id, state, created_at) VALUES (?, ?, ?, ?)",
-            (plan_id, archive_root_id, "draft", now),
+            "INSERT INTO plans (id, archive_root_id, state, created_at, site_id, site_version)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (plan_id, archive_root_id, "draft", now, site_id, site_version),
         )
         self._conn.commit()
         return PlanRecord(
-            id=plan_id, archive_root_id=archive_root_id, state="draft", created_at=now
+            id=plan_id, archive_root_id=archive_root_id, state="draft",
+            created_at=now, site_id=site_id, site_version=site_version,
         )
 
     def get_plan(self, plan_id: str) -> PlanRecord | None:
         row = self._conn.execute(
-            "SELECT id, archive_root_id, state, created_at FROM plans WHERE id = ?",
+            "SELECT id, archive_root_id, state, created_at, site_id, site_version"
+            " FROM plans WHERE id = ?",
             (plan_id,),
         ).fetchone()
         if row is None:
@@ -68,7 +76,8 @@ class PlanRepository:
 
     def list_plans(self) -> list[PlanRecord]:
         rows = self._conn.execute(
-            "SELECT id, archive_root_id, state, created_at FROM plans ORDER BY created_at DESC"
+            "SELECT id, archive_root_id, state, created_at, site_id, site_version FROM plans"
+            " ORDER BY created_at DESC"
         ).fetchall()
         return [PlanRecord(**dict(r)) for r in rows]
 
@@ -77,6 +86,60 @@ class PlanRepository:
             "UPDATE plans SET state = ? WHERE id = ?", (state, plan_id)
         )
         self._conn.commit()
+
+    def start_if_available(self, plan: PlanRecord) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE plans SET state = 'running'
+            WHERE id = ? AND state IN ('draft', 'preflighted', 'failed')
+              AND site_version = (SELECT version FROM mirror_sites WHERE id = plans.site_id)
+              AND (? = 'infocon' OR NOT EXISTS (
+                SELECT 1 FROM plans AS other WHERE other.archive_root_id = ?
+                    AND other.site_id = ? AND other.state = 'running'
+              ))
+            """,
+            (plan.id, plan.site_id, plan.archive_root_id, plan.site_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def approve_https(self, item: PlanItemRecord, plan: PlanRecord, url: str) -> bool:
+        if not self._conn.in_transaction:
+            self._conn.execute("BEGIN IMMEDIATE")
+        current = self._conn.execute(
+            "SELECT version FROM mirror_sites WHERE id = ?", (plan.site_id,),
+        ).fetchone()
+        if current is None or current[0] != plan.site_version:
+            self._conn.rollback()
+            return False
+        if plan.site_id != "infocon":
+            blocked = self._conn.execute(
+                """
+                SELECT 1 FROM plans AS other WHERE other.archive_root_id = ?
+                    AND other.site_id = ? AND other.state = 'running' AND (
+                        other.id != ? OR EXISTS (
+                            SELECT 1 FROM plan_items WHERE plan_id = other.id
+                            AND status IN ('pending', 'downloading', 'paused')
+                        )
+                    )
+                """,
+                (plan.archive_root_id, plan.site_id, plan.id),
+            ).fetchone()
+            if blocked:
+                self._conn.rollback()
+                return False
+        changed = self._conn.execute(
+            """
+            UPDATE plan_items SET method = 'https', url = ?, torrent_url = url,
+                fallback_reason = 'swarm_unreachable', status = 'pending'
+            WHERE id = ? AND status = 'blocked'
+            """,
+            (url, item.id),
+        ).rowcount
+        if changed:
+            self._conn.execute("UPDATE plans SET state = 'running' WHERE id = ?", (plan.id,))
+        self._conn.commit()
+        return changed == 1
 
     def finish_if_running(self, plan_id: str, state: str) -> bool:
         """Claim finalization once when HTTP and torrent workers finish together."""
@@ -149,16 +212,17 @@ class PlanRepository:
         url: str | None = None,
         torrent_url: str | None = None,
         size_bytes: int | None = None,
+        mirror_json: str | None = None,
     ) -> PlanItemRecord:
         item_id = str(uuid.uuid4())
         self._conn.execute(
             """INSERT INTO plan_items
                (id, plan_id, method, status, destination_relpath, fallback_reason,
-                collection_key, url, torrent_url, size_bytes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                collection_key, url, torrent_url, size_bytes, mirror_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 item_id, plan_id, method, status, destination_relpath,
-                fallback_reason, collection_key, url, torrent_url, size_bytes,
+                fallback_reason, collection_key, url, torrent_url, size_bytes, mirror_json,
             ),
         )
         self._conn.commit()
@@ -166,13 +230,13 @@ class PlanRepository:
             id=item_id, plan_id=plan_id, method=method, status=status,
             destination_relpath=destination_relpath, fallback_reason=fallback_reason,
             collection_key=collection_key, url=url, torrent_url=torrent_url,
-            size_bytes=size_bytes,
+            size_bytes=size_bytes, mirror_json=mirror_json,
         )
 
     def get_item(self, item_id: str) -> PlanItemRecord | None:
         row = self._conn.execute(
             """SELECT id, plan_id, method, status, destination_relpath, fallback_reason,
-                      collection_key, url, torrent_url, size_bytes
+                      collection_key, url, torrent_url, size_bytes, mirror_json
                FROM plan_items WHERE id = ?""",
             (item_id,),
         ).fetchone()
@@ -183,7 +247,7 @@ class PlanRepository:
     def list_items(self, plan_id: str) -> list[PlanItemRecord]:
         rows = self._conn.execute(
             """SELECT id, plan_id, method, status, destination_relpath, fallback_reason,
-                      collection_key, url, torrent_url, size_bytes
+                      collection_key, url, torrent_url, size_bytes, mirror_json
                FROM plan_items WHERE plan_id = ?""",
             (plan_id,),
         ).fetchall()

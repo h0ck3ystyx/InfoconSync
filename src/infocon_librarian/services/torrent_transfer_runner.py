@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import hashlib
 import json
 import logging
 import threading
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 
 from infocon_librarian.domain.models import TorrentStartParams, TransferState
 from infocon_librarian.remote.client import new_http_client
+from infocon_librarian.remote.mirror import get_site, mirror_client, mirror_path, read_limited
 from infocon_librarian.services.pause_control import wait_while_paused
 from infocon_librarian.storage.database import open_db
 from infocon_librarian.storage.migrations import migrate
@@ -77,6 +79,12 @@ def run_torrent_transfer(
     resume_path = None
     try:
         checkpoint()
+        plan = repo.get_plan(plan_id)
+        if plan is None:
+            return
+        site = get_site(conn, plan.site_id)
+        if site is None or site.version != plan.site_version:
+            raise ValueError("Plan mirror site is unavailable")
         items = repo.list_items(plan_id)
         torrent_items = [it for it in items if it.method == "torrent" and it.status == "pending"]
 
@@ -103,9 +111,34 @@ def run_torrent_transfer(
                 "collection_key": item.collection_key,
             })
 
-            # Fetch torrent file
+            # InfoCon torrents are rooted at the section. DEF CON torrents are
+            # accepted only when they reproduce all files in the mirror item.
+            ckey = item.collection_key or item.destination_relpath
+            section = ckey.split("/", 1)[0] if "/" in ckey else ""
+            save_path = archive_root / section
             try:
-                torrent_bytes = _fetch_torrent_bytes(item.url)
+                if item.mirror_json:
+                    if site.id != "defcon" or not item.url:
+                        raise ValueError("Torrent source is unavailable")
+                    mirror = json.loads(item.mirror_json)
+                    with mirror_client(site.base_url) as client:
+                        torrent_bytes = read_limited(client, item.url)
+                    if hashlib.sha256(torrent_bytes).hexdigest() != mirror["torrent_digest"]:
+                        raise ValueError("Torrent metadata changed. Check the site again.")
+                    expected = {path for path, _ in mirror["files"]}
+                    torrent_files = adapter.inspect(torrent_bytes).files
+                    if {file.relative_path for file in torrent_files} != expected:
+                        raise ValueError("Torrent no longer matches the selected files")
+                    save_path = (
+                        mirror_path(archive_root, site.relative_folder)
+                        if site.relative_folder else archive_root
+                    )
+                    for path in expected:
+                        mirror_path(save_path, path)
+                elif item.url:
+                    torrent_bytes = _fetch_torrent_bytes(item.url)
+                else:
+                    raise ValueError("Missing torrent URL")
             except Exception as exc:
                 log.warning("Torrent fetch failed for item %s: %s", item.id[:8], exc)
                 repo.update_item_status(item.id, "failed")
@@ -120,17 +153,12 @@ def run_torrent_transfer(
                 })
                 continue
 
-            # save_path = archive_root / section so the torrent root dir lands correctly
-            ckey = item.collection_key or item.destination_relpath
-            section = ckey.split("/", 1)[0] if "/" in ckey else ""
-            save_path = str(archive_root / section) if section else str(archive_root)
-
             checkpoint()
             resume_path = db_path.parent / "jobs" / f"{item.id}.resume"
             resume_data = resume_path.read_bytes() if resume_path.exists() else None
             params = TorrentStartParams(
                 torrent_bytes=torrent_bytes,
-                save_path=save_path,
+                save_path=str(save_path),
                 selected_indices=(),  # download all files
                 resume_data=resume_data,
             )
@@ -336,6 +364,7 @@ def run_torrent_transfer(
             receipt_path.write_text(json.dumps({
                 "receipt_id": receipt_id,
                 "plan_id": plan_id,
+                "site_id": site.id,
                 "completed_at": datetime.datetime.now(datetime.UTC).isoformat(),
                 "items": receipt_items,
             }, indent=2))
