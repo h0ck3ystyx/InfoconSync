@@ -34,7 +34,7 @@ dev = [
     "ruff>=0.17.1",
     "mypy>=2.4.1",
     "playwright>=1.44",
-    "pytest-playwright>=0.5",
+    "pytest-playwright>=0.10.0",
 ]
 
 [tool.pytest.ini_options]
